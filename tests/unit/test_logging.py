@@ -3,12 +3,33 @@ from __future__ import annotations
 import logging
 from io import StringIO
 
+from starlette.datastructures import Headers
+
 from src.app import create_app
 from src.config import EnvironmentMode, Settings
 from src.security.logging import BearerCredentialRedactionFilter
 
 
 TOKEN = "raw-secret-token-000000000000000001"
+
+
+class _CollectingHandler(logging.Handler):
+    def __init__(self) -> None:
+        super().__init__()
+        self.records: list[logging.LogRecord] = []
+
+    def emit(self, record: logging.LogRecord) -> None:
+        self.records.append(record)
+
+
+class _SecretStringObject:
+    def __str__(self) -> str:
+        return f"Authorization: Bearer {TOKEN}"
+
+
+class _BrokenStringObject:
+    def __str__(self) -> str:
+        raise RuntimeError("cannot stringify")
 
 
 def test_redaction_filter_removes_bearer_and_authorization_values() -> None:
@@ -168,6 +189,112 @@ def test_logging_redaction_installation_is_idempotent() -> None:
     create_app(settings=settings)
 
     assert logging.Logger.makeRecord is installed_make_record
+
+
+def test_installed_redaction_preserves_deferred_formatting_failure() -> None:
+    create_app(
+        settings=Settings(
+            vless_node_id="node-01",
+            environment_mode=EnvironmentMode.TEST,
+            agent_token_current="explicit-test-token",
+        )
+    )
+    logger = logging.getLogger("agent.deferred-formatting")
+    previous_level = logger.level
+    previous_propagate = logger.propagate
+    logger.setLevel(logging.INFO)
+    logger.propagate = False
+    try:
+        logger.info("%d", "not-an-int")
+    finally:
+        logger.setLevel(previous_level)
+        logger.propagate = previous_propagate
+
+
+def test_installed_redaction_handles_self_referential_extra() -> None:
+    create_app(
+        settings=Settings(
+            vless_node_id="node-01",
+            environment_mode=EnvironmentMode.TEST,
+            agent_token_current="explicit-test-token",
+        )
+    )
+    recursive: dict[str, object] = {}
+    recursive["self"] = recursive
+    handler = _CollectingHandler()
+    logger = logging.getLogger("agent.recursive-extra")
+    logger.addHandler(handler)
+    try:
+        logger.warning("request rejected", extra={"payload": recursive})
+    finally:
+        logger.removeHandler(handler)
+
+    assert handler.records
+    assert handler.records[0].payload == {"self": "[REDACTED]"}
+
+
+def test_installed_redaction_normalizes_generic_mapping_without_raising() -> None:
+    create_app(
+        settings=Settings(
+            vless_node_id="node-01",
+            environment_mode=EnvironmentMode.TEST,
+            agent_token_current="explicit-test-token",
+        )
+    )
+    handler = _CollectingHandler()
+    logger = logging.getLogger("agent.headers-extra")
+    logger.addHandler(handler)
+    try:
+        logger.warning(
+            "request rejected",
+            extra={
+                "headers": Headers(
+                    {
+                        "Authorization": f"Bearer {TOKEN}",
+                        "X-Safe": "visible",
+                    }
+                )
+            },
+        )
+    finally:
+        logger.removeHandler(handler)
+
+    assert handler.records[0].headers == {
+        "authorization": "[REDACTED]",
+        "x-safe": "visible",
+    }
+
+
+def test_installed_redaction_safely_stringifies_unknown_extra_objects() -> None:
+    create_app(
+        settings=Settings(
+            vless_node_id="node-01",
+            environment_mode=EnvironmentMode.TEST,
+            agent_token_current="explicit-test-token",
+        )
+    )
+    handler = _CollectingHandler()
+    logger = logging.getLogger("agent.custom-extra")
+    logger.addHandler(handler)
+    try:
+        logger.warning(
+            "request rejected",
+            extra={
+                "secret_object": _SecretStringObject(),
+                "broken_object": _BrokenStringObject(),
+                "attempt": 3,
+                "enabled": True,
+            },
+        )
+    finally:
+        logger.removeHandler(handler)
+
+    record = handler.records[0]
+    assert TOKEN not in record.secret_object
+    assert record.secret_object == "Authorization: [REDACTED]"
+    assert record.broken_object == "[REDACTED]"
+    assert record.attempt == 3
+    assert record.enabled is True
 
 
 def test_redaction_filter_scrubs_structured_authorization_field() -> None:

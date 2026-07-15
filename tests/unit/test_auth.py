@@ -8,7 +8,7 @@ from unittest.mock import patch
 
 import pytest
 from fastapi import Depends
-from pydantic import ValidationError
+from pydantic import SecretStr, ValidationError
 
 from src.app import create_app
 from src.config import EnvironmentMode, Settings
@@ -181,6 +181,23 @@ def test_local_and_test_modes_accept_explicit_current_token() -> None:
 
     assert settings.agent_token_current is not None
     assert settings.agent_token_current.get_secret_value() == "explicit-test-token"
+
+
+@pytest.mark.parametrize("mode", tuple(EnvironmentMode))
+@pytest.mark.parametrize("field", ("agent_token_current", "agent_token_next"))
+def test_all_modes_reject_blank_secret_str_tokens(
+    mode: EnvironmentMode,
+    field: str,
+) -> None:
+    values = {
+        "vless_node_id": "node-01",
+        "environment_mode": mode,
+        "agent_token_current": SecretStr("x" * 32),
+        field: SecretStr("   "),
+    }
+
+    with pytest.raises(ValidationError, match=field):
+        Settings(**values)
 
 
 @pytest.mark.parametrize("compose_name", ("docker-compose.yml", "docker-compose.local.yml"))

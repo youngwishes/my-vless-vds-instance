@@ -29,10 +29,10 @@ class Settings(BaseSettings):
     agent_token_current: SecretStr
     agent_token_next: SecretStr | None = None
 
-    @field_validator("agent_token_current", "agent_token_next", mode="before")
+    @field_validator("agent_token_current", "agent_token_next")
     @classmethod
-    def _reject_blank_token(cls, value: object) -> object:
-        if isinstance(value, str) and not value.strip():
+    def _reject_blank_token(cls, value: SecretStr | None) -> SecretStr | None:
+        if value is not None and not value.get_secret_value().strip():
             raise ValueError("token must not be blank")
         return value
 
