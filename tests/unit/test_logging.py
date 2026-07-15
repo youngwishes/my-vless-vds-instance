@@ -48,6 +48,41 @@ def test_create_app_installs_redaction_for_captured_logs(caplog) -> None:
     assert "Authorization: [REDACTED]" in caplog.text
 
 
+def test_installed_filter_redacts_post_extra_authorization_and_nested_headers(
+    caplog,
+) -> None:
+    create_app(
+        settings=Settings(
+            vless_node_id="node-01",
+            environment_mode=EnvironmentMode.TEST,
+            agent_token_current="explicit-test-token",
+        )
+    )
+    previous_formatter = caplog.handler.formatter
+    caplog.handler.setFormatter(
+        logging.Formatter("%(message)s %(authorization)s %(headers)s")
+    )
+    try:
+        with caplog.at_level(logging.INFO, logger="agent.authentication"):
+            logging.getLogger("agent.authentication").info(
+                "request rejected",
+                extra={
+                    "authorization": f"Bearer {TOKEN}",
+                    "headers": {
+                        "Authorization": f"Bearer {TOKEN}",
+                        "X-Safe": "visible",
+                    },
+                },
+            )
+
+        assert TOKEN not in caplog.text
+        assert caplog.text.count("[REDACTED]") == 2
+        assert "X-Safe" in caplog.text
+        assert "visible" in caplog.text
+    finally:
+        caplog.handler.setFormatter(previous_formatter)
+
+
 def test_redaction_filter_scrubs_structured_authorization_field() -> None:
     record = logging.LogRecord(
         name="agent.test",

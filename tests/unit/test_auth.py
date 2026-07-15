@@ -49,7 +49,7 @@ def _get(app, *, authorization: str | None = None) -> _Response:
     messages: list[dict[str, object]] = []
     request_headers = []
     if authorization is not None:
-        request_headers.append((b"authorization", authorization.encode("ascii")))
+        request_headers.append((b"authorization", authorization.encode("latin-1")))
     scope = {
         "type": "http",
         "asgi": {"version": "3.0"},
@@ -125,6 +125,20 @@ def test_token_for_another_node_does_not_authenticate() -> None:
     assert _get(node_two, authorization=f"Bearer {CURRENT_TOKEN}").status_code == 401
 
 
+def test_non_ascii_bearer_token_returns_contract_safe_401() -> None:
+    response = _get(
+        _app(current_token=CURRENT_TOKEN),
+        authorization="Bearer nøt-the-token",
+    )
+
+    assert response.status_code == 401
+    assert response.headers["www-authenticate"] == "Bearer"
+    assert response.json() == {
+        "code": "unauthorized",
+        "message": "Authentication is required.",
+    }
+
+
 def test_authentication_compares_each_configured_token_with_compare_digest() -> None:
     with patch("src.security.auth.secrets.compare_digest", wraps=__import__("secrets").compare_digest) as compare:
         response = _get(
@@ -146,7 +160,18 @@ def test_production_rejects_missing_blank_or_short_current_token(token: str | No
         )
 
 
-def test_local_and_test_tokens_must_be_explicit_and_are_not_invented() -> None:
+@pytest.mark.parametrize("mode", (EnvironmentMode.LOCAL, EnvironmentMode.TEST))
+def test_local_and_test_modes_require_an_explicit_current_token(
+    mode: EnvironmentMode,
+) -> None:
+    with pytest.raises(ValidationError, match="agent_token_current"):
+        Settings(
+            vless_node_id="node-01",
+            environment_mode=mode,
+        )
+
+
+def test_local_and_test_modes_accept_explicit_current_token() -> None:
     settings = Settings(
         vless_node_id="node-01",
         environment_mode=EnvironmentMode.TEST,

@@ -26,7 +26,7 @@ class Settings(BaseSettings):
 
     vless_node_id: NodeId
     environment_mode: EnvironmentMode = EnvironmentMode.PRODUCTION
-    agent_token_current: SecretStr | None = None
+    agent_token_current: SecretStr
     agent_token_next: SecretStr | None = None
 
     @field_validator("agent_token_current", "agent_token_next", mode="before")
@@ -40,8 +40,6 @@ class Settings(BaseSettings):
     def _validate_production_tokens(self) -> Settings:
         if self.environment_mode is not EnvironmentMode.PRODUCTION:
             return self
-        if self.agent_token_current is None:
-            raise ValueError("agent_token_current is required in production")
         current = self.agent_token_current.get_secret_value()
         if len(current) < MINIMUM_PRODUCTION_TOKEN_LENGTH:
             raise ValueError(

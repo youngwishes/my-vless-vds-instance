@@ -59,7 +59,7 @@ Production Compose does not mount source code and requires the node identity
 and bearer token:
 
 ```bash
-VLESS_NODE_ID=example-node AGENT_TOKEN_CURRENT=secure-token-from-secret-store docker compose -f docker-compose.yml up --build -d
+VLESS_NODE_ID=example-node AGENT_TOKEN_CURRENT=secure-token-from-secret-store-at-least-32-chars docker compose -f docker-compose.yml up --build -d
 ```
 
 The image runs the agent as a non-root user. No secrets or environment files

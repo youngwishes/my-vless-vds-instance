@@ -48,7 +48,10 @@ async def require_bearer_token(
         if token is not None
     )
     matches = tuple(
-        secrets.compare_digest(credentials.credentials, token)
+        secrets.compare_digest(
+            credentials.credentials.encode("utf-8"),
+            token.encode("utf-8"),
+        )
         for token in configured_tokens
     )
     if not any(matches):

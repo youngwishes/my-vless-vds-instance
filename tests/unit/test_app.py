@@ -13,6 +13,7 @@ def test_create_app_exposes_no_routes() -> None:
     settings = Settings(
         vless_node_id="node-01",
         environment_mode=EnvironmentMode.TEST,
+        agent_token_current="explicit-test-token",
     )
 
     app = create_app(settings=settings)
@@ -24,11 +25,13 @@ def test_create_app_exposes_no_routes() -> None:
 def test_settings_load_typed_values_from_environment(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("VLESS_NODE_ID", "node-01")
     monkeypatch.setenv("ENVIRONMENT_MODE", "local")
+    monkeypatch.setenv("AGENT_TOKEN_CURRENT", "explicit-local-token")
 
     settings = Settings(_env_file=None)
 
     assert settings.vless_node_id == "node-01"
     assert settings.environment_mode is EnvironmentMode.LOCAL
+    assert settings.agent_token_current.get_secret_value() == "explicit-local-token"
 
 
 def test_environment_app_factory_requires_node_identity(
