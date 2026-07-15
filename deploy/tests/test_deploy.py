@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import configparser
 import importlib.util
+import json
+import os
 import re
 import subprocess
 from pathlib import Path
@@ -74,7 +76,71 @@ def _render_firewall(*, sources: list[str], port: int = 8443) -> str:
             source_line = line
             continue
         rendered.append(line)
-    return "\n".join(rendered).replace("{{ vless_agent_management_port }}", str(port))
+    return "\n".join(rendered).replace(
+        "{{ vless_agent_firewall_active_port | default(vless_agent_management_port) }}",
+        str(port),
+    )
+
+
+def _write_fake_iptables(path: Path) -> None:
+    path.write_text(
+        """#!/usr/bin/env python3
+import json
+import os
+import sys
+from pathlib import Path
+
+state_path = Path(os.environ["FAKE_IPTABLES_STATE"])
+state = json.loads(state_path.read_text()) if state_path.exists() else {"chains": {"INPUT": []}}
+args = [value for value in sys.argv[1:] if value != "-w"]
+chains = state["chains"]
+
+def save(code=0):
+    state_path.write_text(json.dumps(state))
+    raise SystemExit(code)
+
+command = args[0]
+if command == "-N":
+    if args[1] in chains:
+        save(1)
+    chains[args[1]] = []
+elif command == "-A":
+    chains[args[1]].append(args[2:])
+elif command == "-I":
+    chains[args[1]].insert(int(args[2]) - 1, args[3:])
+elif command == "-L":
+    chain = args[1]
+    if chain not in chains:
+        save(1)
+    if chain == "INPUT":
+        for number, rule in enumerate(chains[chain], 1):
+            target = rule[rule.index("-j") + 1]
+            print(f"{number} {target} tcp -- anywhere anywhere")
+elif command == "-nL":
+    if args[1] not in chains:
+        save(1)
+elif command == "-D":
+    chains[args[1]].pop(int(args[2]) - 1)
+elif command == "-F":
+    chains[args[1]] = []
+elif command == "-X":
+    target = args[1]
+    if any(rule[rule.index("-j") + 1] == target for rule in chains["INPUT"]):
+        save(4)
+    del chains[target]
+elif command == "-E":
+    old, new = args[1:3]
+    chains[new] = chains.pop(old)
+    for rule in chains["INPUT"]:
+        if rule[rule.index("-j") + 1] == old:
+            rule[rule.index("-j") + 1] = new
+else:
+    save(3)
+save()
+""",
+        encoding="utf-8",
+    )
+    path.chmod(0o755)
 
 
 def test_playbooks_are_environment_specific_and_prod_is_serial_fail_fast() -> None:
@@ -218,8 +284,43 @@ def test_rendered_compose_is_checked_for_digest_loopback_and_named_volume() -> N
     assert "ghcr.io/xtls/xray-core@" + XRAY_DIGEST in tasks
     assert "vless_agent_compose_config.services.agent.ports" in tasks
     assert "host_ip == '127.0.0.1'" in tasks
-    assert "'agent-snapshot' in vless_agent_compose_config.volumes" in tasks
+    assert "vless_agent_has_durable_snapshot_volume(vless_agent_snapshot_volume)" in tasks
     assert "Rendered Compose must retain exact Xray digest, loopback API, and snapshot volume" in tasks
+
+
+def test_compose_snapshot_volume_validator_rejects_broken_topologies() -> None:
+    validator = _load_role_filters()["vless_agent_has_durable_snapshot_volume"]
+    expected_name = "vless-agent_agent-snapshot"
+    valid = {
+        "services": {
+            "agent": {
+                "volumes": [
+                    {
+                        "type": "volume",
+                        "source": "agent-snapshot",
+                        "target": "/var/lib/vless-agent",
+                        "read_only": False,
+                    }
+                ]
+            }
+        },
+        "volumes": {"agent-snapshot": {"name": expected_name}},
+    }
+
+    assert validator(valid, expected_name)
+    for mutate in (
+        lambda value: value["services"]["agent"].update(volumes=[]),
+        lambda value: value["services"]["agent"]["volumes"][0].update(read_only=True),
+        lambda value: value["services"]["agent"]["volumes"][0].update(source="other"),
+        lambda value: value["services"]["agent"]["volumes"][0].update(target="/tmp"),
+        lambda value: value["volumes"]["agent-snapshot"].update(name="other-volume"),
+        lambda value: value["services"]["agent"]["volumes"].append(
+            {"type": "bind", "source": "/tmp", "target": "/var/lib/vless-agent"}
+        ),
+    ):
+        broken = json.loads(json.dumps(valid))
+        mutate(broken)
+        assert not validator(broken, expected_name)
 
 
 def test_every_compose_command_uses_pinned_project_name_and_volume_relation() -> None:
@@ -316,6 +417,63 @@ def test_rendered_firewall_allows_only_loopback_interface_then_backend_sources()
     assert all("-s " in rule for rule in external_accepts)
 
 
+def test_firewall_lifecycle_removes_old_port_jumps_without_fail_open(tmp_path: Path) -> None:
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    _write_fake_iptables(bin_dir / "iptables")
+    state_path = tmp_path / "iptables.json"
+    environment = {**os.environ, "PATH": f"{bin_dir}:{os.environ['PATH']}", "FAKE_IPTABLES_STATE": str(state_path)}
+
+    scripts: list[Path] = []
+    for port in (8443, 9443):
+        script = tmp_path / f"firewall-{port}"
+        script.write_text(_render_firewall(sources=["192.0.2.10"], port=port), encoding="utf-8")
+        script.chmod(0o700)
+        scripts.append(script)
+
+    subprocess.run([scripts[0], "start"], check=True, env=environment)
+    subprocess.run([scripts[1], "start"], check=True, env=environment)
+    reloaded = json.loads(state_path.read_text(encoding="utf-8"))
+    assert set(reloaded["chains"]) == {"INPUT", "VLESS_AGENT_MGMT"}
+    assert len(reloaded["chains"]["INPUT"]) == 1
+    assert reloaded["chains"]["INPUT"][0] == [
+        "-p", "tcp", "--dport", "9443", "-j", "VLESS_AGENT_MGMT"
+    ]
+
+    subprocess.run([scripts[1], "stop"], check=True, env=environment)
+    stopped = json.loads(state_path.read_text(encoding="utf-8"))
+    assert stopped == {"chains": {"INPUT": []}}
+
+
+def test_management_port_state_blocks_uncoordinated_change_before_mutation() -> None:
+    tasks = _walk_tasks(_yaml(ROLE / "tasks" / "main.yml"))
+    names = [task.get("name") for task in tasks]
+    guard = next(task for task in tasks if task.get("name") == "Reject uncoordinated management port change")
+    persist = next(task for task in tasks if task.get("name") == "Persist successful management port")
+
+    assert guard["no_log"] is True
+    assert any(
+        "vless_persisted_management_port == (vless_agent_management_port | string)" in condition
+        for condition in guard["ansible.builtin.assert"]["that"]
+    )
+    assert "coordinated_management_port_migration" not in _read(
+        ROLE / "defaults" / "main.yml"
+    )
+    assert "coordinated_management_port_migration" not in _read(
+        ROLE / "tasks" / "main.yml"
+    )
+    assert guard["ansible.builtin.assert"]["that"][-1] == (
+        "vless_persisted_management_port == (vless_agent_management_port | string)"
+    )
+    assert names.index("Reject uncoordinated management port change") < names.index("Install management firewall script")
+    assert names.index("Reject uncoordinated management port change") < names.index("Install nginx TLS virtual host")
+    assert names.index("Reject uncoordinated management port change") < names.index(
+        "Install explicit runtime packages without auto-starting nginx"
+    )
+    assert persist["ansible.builtin.copy"]["mode"] == "0600"
+    assert names.index("Verify authenticated HTTPS health") < names.index("Persist successful management port")
+
+
 @pytest.mark.parametrize(
     ("value", "expected"),
     [
@@ -360,6 +518,91 @@ def test_nginx_first_install_starts_only_after_validated_tls_configuration() -> 
         "Start nginx after firewall is active"
     )
     assert "state: started" in tasks[tasks.index("Start nginx after firewall is active") :]
+
+
+def test_effective_nginx_listeners_are_host_wide_tls_only_before_reload() -> None:
+    tasks = _walk_tasks(_yaml(ROLE / "tasks" / "main.yml"))
+    names = [task.get("name") for task in tasks]
+    dump = next(task for task in tasks if task.get("name") == "Inspect effective nginx configuration")
+    assertion = next(task for task in tasks if task.get("name") == "Require exactly one effective HTTPS listener")
+
+    assert dump["ansible.builtin.command"]["argv"] == ["nginx", "-T"]
+    assert dump["changed_when"] is False and dump["no_log"] is True
+    assert assertion["no_log"] is True
+    assert assertion["ansible.builtin.assert"]["that"] == [
+        "vless_agent_effective_nginx_listeners == ['0.0.0.0:' ~ (vless_agent_management_port | string) ~ ' ssl']"
+    ]
+    assert names.index("Install nginx TLS virtual host") < names.index("Inspect effective nginx configuration")
+    assert names.index("Require exactly one effective HTTPS listener") < names.index("Start nginx after firewall is active")
+    assert names.index("Disable packaged nginx default listener symlink") < names.index(
+        "Install nginx TLS virtual host"
+    )
+
+
+def test_packaged_nginx_default_is_removed_only_when_known_safe_symlink() -> None:
+    validator = _load_role_filters()["vless_agent_safe_packaged_nginx_default"]
+    tasks = _walk_tasks(_yaml(ROLE / "tasks" / "main.yml"))
+    by_name = {task.get("name"): task for task in tasks}
+
+    assert validator({"exists": False})
+    assert validator(
+        {
+            "exists": True,
+            "islnk": True,
+            "lnk_source": "/etc/nginx/sites-available/default",
+        }
+    )
+    assert not validator(
+        {"exists": True, "islnk": False, "isreg": True, "path": "operator-file"}
+    )
+    assert not validator(
+        {"exists": True, "islnk": True, "lnk_source": "/srv/operator-nginx.conf"}
+    )
+
+    inspect = by_name["Inspect packaged nginx default listener"]
+    safety = by_name["Require packaged nginx default listener safety"]
+    disable = by_name["Disable packaged nginx default listener symlink"]
+    assert inspect["ansible.builtin.stat"] == {
+        "path": "/etc/nginx/sites-enabled/default",
+        "follow": False,
+    }
+    assert safety["ansible.builtin.assert"]["that"] == [
+        "vless_packaged_nginx_default.stat | vless_agent_safe_packaged_nginx_default"
+    ]
+    assert disable["ansible.builtin.file"] == {
+        "path": "/etc/nginx/sites-enabled/default",
+        "state": "absent",
+    }
+    assert disable["when"] == "vless_packaged_nginx_default.stat.exists"
+
+
+def test_nginx_listener_parser_ignores_comments_and_rejects_extra_listeners() -> None:
+    parser = _load_role_filters()["vless_agent_nginx_listeners"]
+
+    assert parser("# listen 80;\n listen 0.0.0.0:8443 ssl; # managed\n") == [
+        "0.0.0.0:8443 ssl"
+    ]
+    assert parser("listen 0.0.0.0:8443 ssl;\nlisten [::]:8443 ssl;\n") != [
+        "0.0.0.0:8443 ssl"
+    ]
+    assert parser("listen 0.0.0.0:8443 ssl;\nlisten\n  80;\n") != [
+        "0.0.0.0:8443 ssl"
+    ]
+
+
+def test_previous_compose_state_requires_running_agent_and_xray() -> None:
+    validator = _load_role_filters()["vless_agent_compose_runtime_was_running"]
+
+    assert validator(json.dumps([
+        {"Service": "agent", "State": "running"},
+        {"Service": "xray", "State": "running"},
+        {"Service": "xray-config", "State": "exited"},
+    ]))
+    assert not validator(json.dumps([
+        {"Service": "agent", "State": "running"},
+        {"Service": "xray", "State": "exited"},
+    ]))
+    assert not validator("not-json")
 
 
 def test_health_gate_is_verified_authenticated_exact_and_bounded() -> None:
@@ -452,6 +695,52 @@ def test_failed_deploy_rolls_back_only_to_declared_compatible_exact_sha() -> Non
     assert "docker compose down" not in text
 
 
+def test_rollback_captures_and_restores_prior_configuration_without_current_vars() -> None:
+    tasks = _walk_tasks(_yaml(ROLE / "tasks" / "main.yml"))
+    names = [task.get("name") for task in tasks]
+    task_by_name = {task.get("name"): task for task in tasks}
+
+    for capture, overwrite in (
+        ("Capture previous private agent environment", "Render private agent environment"),
+        ("Capture previous REALITY key", "Render node REALITY key file"),
+        ("Capture previous nginx virtual host", "Install nginx TLS virtual host"),
+    ):
+        assert names.index(capture) < names.index(overwrite)
+        assert task_by_name[capture]["no_log"] is True
+
+    can_rollback = _read(ROLE / "tasks" / "main.yml")
+    assert "vless_previous_config_artifacts_available" in can_rollback
+    assert "vless_previous_compose_was_running" in can_rollback
+    assert task_by_name["Restore previous private agent environment"]["ansible.builtin.copy"]["content"] == (
+        "{{ vless_previous_agent_env.content | b64decode }}"
+    )
+    assert task_by_name["Restore previous REALITY key"]["ansible.builtin.copy"]["content"] == (
+        "{{ vless_previous_reality_key.content | b64decode }}"
+    )
+    assert task_by_name["Restore previous nginx virtual host"]["ansible.builtin.copy"]["content"] == (
+        "{{ vless_previous_nginx_config.content | b64decode }}"
+    )
+    assert task_by_name["Restore previous private agent environment"]["no_log"] is True
+    assert "src" not in task_by_name["Restore previous private agent environment"]["ansible.builtin.copy"]
+    assert names.index("Validate restored nginx configuration") < names.index(
+        "Restart compatible previous revision using the same snapshot volume"
+    )
+    assert names.index("Reload restored nginx configuration") < names.index(
+        "Restart compatible previous revision using the same snapshot volume"
+    )
+    assert task_by_name["Remove candidate nginx virtual host on first install"]["ansible.builtin.file"]["state"] == "absent"
+    assert names.index("Remove candidate nginx virtual host on first install") < names.index(
+        "Explain first-install or incompatible rollback refusal"
+    )
+    rollback_health = task_by_name["Verify rolled back HTTPS health"]["ansible.builtin.uri"]
+    assert rollback_health["url"] == (
+        "https://{{ vless_previous_agent_domain }}:{{ vless_previous_management_port }}/api/v1/health"
+    )
+    assert rollback_health["headers"]["Authorization"] == (
+        "Bearer {{ vless_previous_agent_token_current }}"
+    )
+
+
 def test_documentation_covers_safe_rollout_recovery_rotation_and_approval() -> None:
     deploy_doc = _read(ROOT / "docs" / "DEPLOY.md").lower()
     compatibility = _read(ROOT / "docs" / "COMPATIBILITY.md")
@@ -490,6 +779,21 @@ def test_deploy_docs_describe_contract_accurate_identity_anchor() -> None:
     assert "health gate verifies tls, bearer authentication, contract v1, node identity" not in deploy_doc
     assert "loopback-interface exception" in deploy_doc
     assert "host proxy is disabled" in deploy_doc
+
+
+def test_deploy_docs_cover_port_migration_hostwide_nginx_and_exact_rollback_scope() -> None:
+    deploy_doc = " ".join(_read(ROOT / "docs" / "DEPLOY.md").lower().split())
+
+    assert "separate reviewed implementation" in deploy_doc
+    assert "no variable override" in deploy_doc
+    assert "migration-from" not in deploy_doc
+    assert "persisted root-only port state" in deploy_doc
+    assert "nginx -t" in deploy_doc
+    assert "every effective `listen`" in deploy_doc
+    assert "prior environment, reality key, and nginx" in deploy_doc
+    assert "previous compose project was running" in deploy_doc
+    assert "first install removes the candidate nginx" in deploy_doc
+    assert "packaged enabled symlink" in deploy_doc
 
 
 def test_deploy_artifacts_contain_no_unsafe_secret_or_mutable_runtime() -> None:

@@ -5,9 +5,11 @@ vless_agent_env_path: /etc/vless-agent/agent.env
 vless_agent_reality_key_path: /etc/vless-agent/secrets/reality_private_key
 vless_agent_tls_certificate_path: /etc/vless-agent/tls/fullchain.pem
 vless_agent_tls_private_key_path: /etc/vless-agent/tls/private.key
+vless_agent_nginx_config_path: /etc/nginx/sites-enabled/vless-agent.conf
 vless_agent_domain: "{{ inventory_hostname }}"
 vless_agent_port: 8000
 vless_agent_management_port: 8443
+vless_agent_management_port_state_path: /etc/vless-agent/management-port
 vless_agent_public_port: 443
 vless_agent_tls_minimum_validity_seconds: 604800
 vless_agent_central_backend_ipv4_allowlist: []

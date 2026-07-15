@@ -24,6 +24,17 @@ instructions prepare commands; they do not grant approval to run them.
    host has no conflicting Docker/VPC subnet and that VLESS TCP 443 and
    established SSH remain reachable. The role exposes no plaintext management
    listener: nginx provides TLS only, while Compose binds the agent to loopback.
+6. Remove or disable every unmanaged nginx listener out of band. The role does
+   not delete operator configuration. It disables only the packaged enabled
+   symlink `/etc/nginx/sites-enabled/default`, and only after proving that it is
+   a symlink to `/etc/nginx/sites-available/default`; a regular file or another
+   target fails closed. After installing its candidate virtual host the role
+   runs `nginx -t` and inspects `nginx -T`; every effective `listen` directive
+   must reduce to the single intended IPv4 TLS management listener.
+7. Confirm the rendered Compose topology maps the logical `agent-snapshot`
+   volume read-write to `/var/lib/vless-agent` and pins its concrete name to the
+   configured Compose project. A bind, read-only mount, target drift, or volume
+   name mismatch stops before replacement.
 
 Run syntax checks locally with the documentation-only inventory before using a
 real inventory. The actual test invocation uses the ignored inventory and Vault:
@@ -47,6 +58,18 @@ address range; every external interface remains restricted to the explicit
 central-backend IPv4 allowlist. Ansible health requests set `use_proxy: false`,
 so the host proxy is disabled and cannot receive the bearer credential or route
 the local health gate away from the node.
+
+### Management-port changes
+
+After every successful health gate the role writes persisted root-only port
+state with mode 0600. Once that state exists, any different requested port fails
+before apt, firewall or nginx mutation. There is no variable override and the
+state file must never be edited or deleted to bypass the gate.
+
+A port change requires a separate reviewed implementation with dual-port
+firewall/nginx choreography, central-backend routing preparation, test-first
+evidence, rollback design and explicit production approval. A-008 deliberately
+does not attempt this migration.
 
 ## Snapshot backup and restore drill
 
@@ -84,14 +107,21 @@ play advances.
 
 ## Rollback and first install
 
-The role records the previous exact Git SHA and Compose state. A failed config,
-start, or health gate may automatically roll back only when that SHA appears in
-the operator-supplied compatible list backed by `docs/COMPATIBILITY.md`. It
-reuses the named snapshot volume, restores the prior SHA and environment,
-restarts it, verifies authenticated HTTPS health, and still fails the play for
-operator review.
+Before mutation the role records the previous exact Git SHA, confirms the
+previous Compose project was running, and securely captures the prior
+environment, REALITY key, and nginx configuration without logging their
+contents. A failed config, start, or health gate may automatically roll back
+only when all those artifacts exist and the SHA appears in the operator-supplied
+compatible list backed by `docs/COMPATIBILITY.md`. It restores those exact
+artifacts rather than rendering current variables, validates and reloads the
+restored host-wide nginx configuration, restores the prior firewall port,
+reuses the named snapshot volume, restarts the prior SHA, and verifies
+authenticated HTTPS health with the prior domain, port and token. The play still
+fails for operator review after a successful rollback.
 
-A first install has no invented rollback. An absent or incompatible previous SHA
-also stops with state and private backup preserved. Recovery then requires an
-explicitly reviewed compatible revision or a forward fix; never delete the
-snapshot or force an unreviewed schema downgrade.
+A first install removes the candidate nginx virtual host after failure and has
+no invented rollback. An absent or incompatible previous SHA, a previously
+stopped Compose project, or incomplete/unsafe prior configuration also stops
+with state and private backup preserved. Recovery then requires an explicitly
+reviewed compatible revision or a forward fix; never delete the snapshot or
+force an unreviewed schema downgrade.

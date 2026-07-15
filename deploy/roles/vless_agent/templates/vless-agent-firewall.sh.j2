@@ -3,13 +3,18 @@ set -eu
 
 CHAIN=VLESS_AGENT_MGMT
 NEXT_CHAIN=VLESS_AGENT_MGMT_NEW
-PORT={{ vless_agent_management_port }}
+PORT={{ vless_agent_firewall_active_port | default(vless_agent_management_port) }}
 
 remove_chain() {
     target="$1"
-    while iptables -w -C INPUT -p tcp --dport "$PORT" -j "$target" 2>/dev/null; do
-        iptables -w -D INPUT -p tcp --dport "$PORT" -j "$target"
-    done
+    iptables -w -L INPUT --line-numbers -n |
+        awk -v target="$target" '$2 == target {print $1}' |
+        sort -rn |
+        while IFS= read -r line_number; do
+            if [ -n "$line_number" ]; then
+                iptables -w -D INPUT "$line_number"
+            fi
+        done
     if iptables -w -nL "$target" >/dev/null 2>&1; then
         iptables -w -F "$target"
         iptables -w -X "$target"
