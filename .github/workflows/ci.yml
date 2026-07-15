@@ -16,14 +16,6 @@ jobs:
   verify:
     runs-on: ubuntu-24.04
     timeout-minutes: 30
-    env:
-      AGENT_SHA: ${{ github.sha }}
-      AGENT_TOKEN_CURRENT: ci-dummy-token-not-a-credential-0001
-      REALITY_PRIVATE_KEY_FILE: /tmp/ci-dummy-reality-private-key
-      REALITY_SERVER_NAME: example.invalid
-      REALITY_SHORT_IDS: 0123456789abcdef
-      REALITY_TARGET: example.invalid:443
-      VLESS_NODE_ID: ci-dummy-node
     steps:
       - name: Check out the exact revision
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
@@ -48,9 +40,16 @@ jobs:
         run: git diff --check "$(git hash-object -t tree /dev/null)" HEAD
 
       - name: Validate production Compose
+        env:
+          AGENT_SHA: ${{ github.sha }}
+          AGENT_TOKEN_CURRENT: ci-dummy-token-not-a-credential-0001
+          REALITY_PRIVATE_KEY_FILE: /tmp/ci-dummy-reality-private-key
         run: docker compose -f docker-compose.yml config --quiet
 
       - name: Validate local Compose
+        env:
+          AGENT_TOKEN_CURRENT: ci-dummy-token-not-a-credential-0001
+          REALITY_PRIVATE_KEY_FILE: /tmp/ci-dummy-reality-private-key
         run: docker compose -f docker-compose.local.yml config --quiet
 
       - name: Syntax-check test deployment

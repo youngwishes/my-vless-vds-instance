@@ -54,3 +54,23 @@ def test_ci_checks_whitespace_across_complete_head_tree() -> None:
     ]
 
     assert 'git diff --check "$(git hash-object -t tree /dev/null)" HEAD' in commands
+
+
+def test_ci_scopes_dummy_interpolation_environment_only_to_compose_steps() -> None:
+    _, workflow = _workflow()
+    job = workflow["jobs"]["verify"]
+    steps = {step["name"]: step for step in job["steps"]}
+
+    assert "env" not in job
+    assert "env" not in steps["Run complete test suite"]
+    assert "env" not in steps["Syntax-check test deployment"]
+    assert "env" not in steps["Syntax-check production deployment"]
+    assert steps["Validate production Compose"]["env"] == {
+        "AGENT_SHA": "${{ github.sha }}",
+        "AGENT_TOKEN_CURRENT": "ci-dummy-token-not-a-credential-0001",
+        "REALITY_PRIVATE_KEY_FILE": "/tmp/ci-dummy-reality-private-key",
+    }
+    assert steps["Validate local Compose"]["env"] == {
+        "AGENT_TOKEN_CURRENT": "ci-dummy-token-not-a-credential-0001",
+        "REALITY_PRIVATE_KEY_FILE": "/tmp/ci-dummy-reality-private-key",
+    }
