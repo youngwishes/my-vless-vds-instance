@@ -6,7 +6,7 @@ from threading import RLock
 from typing import TYPE_CHECKING, Protocol, final
 
 from src.domain import validate_snapshot
-from src.observability import EventCode, Observability
+from src.observability import EventCode, EventObserver
 
 if TYPE_CHECKING:
     from src.api.schemas import SnapshotDTO
@@ -48,8 +48,8 @@ class ApplySnapshotResult:
 @final
 @dataclass(kw_only=True, slots=True, frozen=True)
 class AgentRuntimeState:
+    observer: EventObserver
     lock: RLock = field(default_factory=RLock)
-    observer: Observability = field(default_factory=Observability)
     _status: list[RuntimeStatus] = field(
         default_factory=lambda: [
             RuntimeStatus(readiness=Readiness.NOT_READY, snapshot=None)
@@ -110,7 +110,7 @@ class SnapshotCoordinatorService:
     state: AgentRuntimeState
     apply_snapshot: ApplySnapshot
     exact_set_matches: ExactSetMatches
-    observer: Observability = field(default_factory=Observability)
+    observer: EventObserver
 
     def __call__(self, *, snapshot: SnapshotDTO) -> ApplySnapshotResult:
         validated = validate_snapshot(snapshot)

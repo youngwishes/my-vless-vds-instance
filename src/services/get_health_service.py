@@ -1,10 +1,10 @@
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import TYPE_CHECKING, final
 
 from src.services.snapshot_runtime import AgentRuntimeState, Readiness
-from src.observability import EventCode, Observability
+from src.observability import EventCode, EventObserver
 
 if TYPE_CHECKING:
     from src.api.schemas import SnapshotDTO
@@ -29,7 +29,7 @@ class GetHealthService:
     agent_sha: str
     xray_version: str
     xray_image_digest: str
-    observer: Observability = field(default_factory=Observability)
+    observer: EventObserver
 
     def __call__(self) -> HealthStatus:
         with self.state.lock:

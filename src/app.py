@@ -35,7 +35,7 @@ def create_app(*, settings: Settings, services: AgentServices | None = None) -> 
         try:
             await run_in_threadpool(resolved_services.startup_restore)
         except Exception:
-            resolved_services.observability.record(EventCode.STARTUP_RESTORE_FAILURE)
+            resolved_services.observer.record(EventCode.STARTUP_RESTORE_FAILURE)
             resolved_services.state.record_not_ready()
         yield
 
@@ -57,7 +57,7 @@ def create_app(*, settings: Settings, services: AgentServices | None = None) -> 
     )
     app.state.settings = settings
     app.state.services = resolved_services
-    app.state.observability = resolved_services.observability
+    app.state.observability = resolved_services.observer
     app.include_router(health_router)
     app.include_router(snapshot_router)
     app.openapi = contract_v1_openapi  # type: ignore[method-assign]

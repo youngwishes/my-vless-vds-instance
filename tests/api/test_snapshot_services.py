@@ -8,6 +8,7 @@ from unittest.mock import Mock
 import pytest
 
 from src.api.schemas import SnapshotDTO
+from src.observability import Observability
 from src.services.snapshot_runtime import (
     AgentRuntimeState,
     ApplySnapshotResult,
@@ -46,11 +47,12 @@ def _service(*, state: AgentRuntimeState, apply: Mock, probe: Mock):
         state=state,
         apply_snapshot=apply,
         exact_set_matches=probe,
+        observer=state.observer,
     )
 
 
 def test_first_snapshot_applies_then_equal_snapshot_is_no_op_and_ready() -> None:
-    state = AgentRuntimeState()
+    state = AgentRuntimeState(observer=Observability())
     snapshot = _snapshot(1)
     apply = Mock(return_value=snapshot)
     probe = Mock(return_value=True)
@@ -68,7 +70,7 @@ def test_first_snapshot_applies_then_equal_snapshot_is_no_op_and_ready() -> None
 
 def test_lower_and_conflicting_revision_never_mutate_and_demote_readiness() -> None:
     current = _snapshot(2)
-    state = AgentRuntimeState()
+    state = AgentRuntimeState(observer=Observability())
     state.record_recovery(snapshot=current)
     apply = Mock()
     service = _service(state=state, apply=apply, probe=Mock(return_value=True))
@@ -85,7 +87,7 @@ def test_lower_and_conflicting_revision_never_mutate_and_demote_readiness() -> N
 
 def test_dependency_failure_demotes_before_propagating_without_false_metadata() -> None:
     current = _snapshot(1)
-    state = AgentRuntimeState()
+    state = AgentRuntimeState(observer=Observability())
     state.record_recovery(snapshot=current)
     failure = RuntimeError("private path /secret and uuid 01890f47")
     service = _service(
@@ -106,7 +108,7 @@ def test_dependency_failure_demotes_before_propagating_without_false_metadata() 
 def test_probe_failure_after_durable_apply_publishes_new_metadata_not_old() -> None:
     old = _snapshot(1)
     new = _snapshot(2)
-    state = AgentRuntimeState()
+    state = AgentRuntimeState(observer=Observability())
     state.record_recovery(snapshot=old)
     service = _service(
         state=state,
@@ -123,7 +125,7 @@ def test_probe_failure_after_durable_apply_publishes_new_metadata_not_old() -> N
 
 
 def test_compare_apply_persist_is_serialized_across_concurrent_requests() -> None:
-    state = AgentRuntimeState()
+    state = AgentRuntimeState(observer=Observability())
     first = _snapshot(1)
     second = _snapshot(2)
     entered = threading.Event()
@@ -141,6 +143,7 @@ def test_compare_apply_persist_is_serialized_across_concurrent_requests() -> Non
         state=state,
         apply_snapshot=apply,
         exact_set_matches=lambda **_: True,
+        observer=state.observer,
     )
     errors: list[BaseException] = []
 
@@ -166,7 +169,7 @@ def test_compare_apply_persist_is_serialized_across_concurrent_requests() -> Non
 
 def test_health_read_only_probe_demotes_ready_on_runtime_drift() -> None:
     snapshot = _snapshot(1)
-    state = AgentRuntimeState()
+    state = AgentRuntimeState(observer=Observability())
     state.record_applied(snapshot=snapshot, matches=True)
     probe = Mock(return_value=False)
     service = GetHealthService(
@@ -175,6 +178,7 @@ def test_health_read_only_probe_demotes_ready_on_runtime_drift() -> None:
         agent_sha="a" * 40,
         xray_version="25.7.1",
         xray_image_digest="sha256:" + "b" * 64,
+        observer=state.observer,
     )
 
     health = service()
@@ -186,7 +190,7 @@ def test_health_read_only_probe_demotes_ready_on_runtime_drift() -> None:
 
 def test_health_probe_failure_demotes_before_propagating() -> None:
     snapshot = _snapshot(1)
-    state = AgentRuntimeState()
+    state = AgentRuntimeState(observer=Observability())
     state.record_applied(snapshot=snapshot, matches=True)
     service = GetHealthService(
         state=state,
@@ -194,6 +198,7 @@ def test_health_probe_failure_demotes_before_propagating() -> None:
         agent_sha="a" * 40,
         xray_version="25.7.1",
         xray_image_digest="sha256:" + "b" * 64,
+        observer=state.observer,
     )
 
     with pytest.raises(RuntimeError):
@@ -204,7 +209,7 @@ def test_health_probe_failure_demotes_before_propagating() -> None:
 
 def test_startup_restored_snapshot_is_recovery_ready_until_backend_confirmation() -> None:
     snapshot = _snapshot(4)
-    state = AgentRuntimeState()
+    state = AgentRuntimeState(observer=Observability())
     restore = Mock(return_value=RecoveryState(
         status=RecoveryStatus.RECOVERY_READY,
         snapshot_revision=4,

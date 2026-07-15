@@ -11,6 +11,7 @@ from pydantic import ValidationError
 from src.app import create_app, create_app_from_env
 from src.config import EnvironmentMode, Settings
 from src.factories import AgentServices
+from src.observability import Observability
 from src.services import AgentRuntimeState
 
 
@@ -55,12 +56,14 @@ def test_startup_restore_is_offloaded_from_async_event_loop() -> None:
     )
     called_from: list[int] = []
     startup = Mock(side_effect=lambda: called_from.append(threading.get_ident()))
+    observer = Observability()
     services = AgentServices(
-        state=AgentRuntimeState(),
+        state=AgentRuntimeState(observer=observer),
         get_health=Mock(),
         get_snapshot=Mock(),
         put_snapshot=Mock(),
         startup_restore=startup,
+        observer=observer,
     )
     app = create_app(settings=settings, services=services)
 

@@ -13,6 +13,7 @@ from src.api.schemas import SnapshotDTO
 from src.app import create_app
 from src.config import EnvironmentMode, Settings
 from src.factories import AgentServices
+from src.observability import Observability
 from src.services import AgentRuntimeState, GetHealthService, GetSnapshotService, SnapshotCoordinatorService
 
 
@@ -112,7 +113,8 @@ def _client(*, probe: Mock | None = None, apply: Mock | None = None) -> tuple[_C
         xray_version="25.7.1",
         xray_image_digest="sha256:" + "b" * 64,
     )
-    state = AgentRuntimeState()
+    observer = Observability()
+    state = AgentRuntimeState(observer=observer)
     probe = probe or Mock(return_value=True)
     apply = apply or Mock(side_effect=lambda *, snapshot: snapshot)
     services = AgentServices(
@@ -123,12 +125,17 @@ def _client(*, probe: Mock | None = None, apply: Mock | None = None) -> tuple[_C
             agent_sha=settings.agent_sha,
             xray_version=settings.xray_version,
             xray_image_digest=settings.xray_image_digest,
+            observer=observer,
         ),
         get_snapshot=GetSnapshotService(state=state),
         put_snapshot=SnapshotCoordinatorService(
-            state=state, apply_snapshot=apply, exact_set_matches=probe
+            state=state,
+            apply_snapshot=apply,
+            exact_set_matches=probe,
+            observer=observer,
         ),
         startup_restore=Mock(return_value=None),
+        observer=observer,
     )
     return _Client(create_app(settings=settings, services=services)), state
 

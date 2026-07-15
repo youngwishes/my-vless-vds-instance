@@ -1,12 +1,12 @@
 from __future__ import annotations
 
-from dataclasses import dataclass, field as dataclass_field
+from dataclasses import dataclass
 from enum import StrEnum
 import time
 from typing import TYPE_CHECKING, Callable, Protocol, final
 
 from src.domain import SnapshotError, validate_snapshot
-from src.observability import Observability
+from src.observability import ApplyObserver
 from src.storage import SnapshotRecoveryError
 
 if TYPE_CHECKING:
@@ -59,8 +59,8 @@ class RecoveryState:
 class ApplySnapshotService:
     apply_accesses: ApplyAccesses
     store: SnapshotStoreContract
+    observer: ApplyObserver
     checkpoint_hook: CheckpointHook = noop_checkpoint_hook
-    observer: Observability = dataclass_field(default_factory=Observability)
     monotonic: Callable[[], float] = time.monotonic
 
     def __call__(self, *, snapshot: SnapshotDTO) -> SnapshotDTO:

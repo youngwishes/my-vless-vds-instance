@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import asyncio
+from dataclasses import MISSING, fields
 import json
 import logging
 from unittest.mock import Mock
@@ -89,6 +90,67 @@ def test_readiness_counters_identify_each_target_and_ignore_same_state() -> None
     assert counters["readiness_recovery_ready"] == 1
     assert counters["readiness_ready"] == 1
     assert counters["readiness_not_ready"] == 1
+
+
+def test_manual_composition_requires_and_shares_exactly_one_observer() -> None:
+    observer_owners = (
+        AgentServices,
+        AgentRuntimeState,
+        ApplySnapshotService,
+        GetHealthService,
+        SnapshotCoordinatorService,
+    )
+    for owner in observer_owners:
+        observer_field = next(item for item in fields(owner) if item.name == "observer")
+        assert observer_field.default is MISSING
+        assert observer_field.default_factory is MISSING
+
+    observer = Observability()
+    current = _snapshot(2)
+    state = AgentRuntimeState(observer=observer)
+    probe = Mock(return_value=False)
+    coordinator = SnapshotCoordinatorService(
+        state=state,
+        apply_snapshot=Mock(),
+        exact_set_matches=probe,
+        observer=observer,
+    )
+    services = AgentServices(
+        state=state,
+        get_health=GetHealthService(
+            state=state,
+            exact_set_matches=probe,
+            agent_sha="a" * 40,
+            xray_version="26.7.11",
+            xray_image_digest="sha256:" + "b" * 64,
+            observer=observer,
+        ),
+        get_snapshot=Mock(),
+        put_snapshot=coordinator,
+        startup_restore=Mock(),
+        observer=observer,
+    )
+    app = create_app(
+        settings=Settings(
+            vless_node_id="node-01",
+            environment_mode=EnvironmentMode.TEST,
+            agent_token_current="explicit-test-token",
+        ),
+        services=services,
+    )
+
+    assert app.state.observability is observer
+    state.record_applied(snapshot=current, matches=True)
+    with pytest.raises(RevisionConflictError):
+        coordinator(snapshot=_snapshot(2, access_id=2))
+    state.record_applied(snapshot=current, matches=True)
+    services.get_health()
+
+    counters = observer.snapshot().counters
+    assert counters[EventCode.READINESS_READY.value] == 2
+    assert counters[EventCode.READINESS_NOT_READY.value] == 2
+    assert counters[EventCode.REVISION_CONFLICT.value] == 1
+    assert counters[EventCode.REVISION_DRIFT.value] == 1
 
 
 def test_apply_latency_is_deterministic_and_bucketed() -> None:
@@ -233,7 +295,7 @@ def test_startup_restore_failure_emits_only_safe_fixed_event(
         get_snapshot=Mock(),
         put_snapshot=Mock(),
         startup_restore=Mock(side_effect=RuntimeError(sentinel)),
-        observability=observer,
+        observer=observer,
     )
     app = create_app(
         settings=Settings(

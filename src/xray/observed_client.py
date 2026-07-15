@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import final
 
-from src.observability import EventCode, Observability
+from src.observability import EventCode, EventObserver
 from src.xray.client import XrayClient
 from src.xray.dtos import XrayUser
 from src.xray.exceptions import (
@@ -17,7 +17,7 @@ from src.xray.exceptions import (
 @dataclass(kw_only=True, slots=True, frozen=True)
 class ObservedXrayClient:
     client: XrayClient
-    observer: Observability
+    observer: EventObserver
 
     def get_inbound_users(self, *, tag: str) -> tuple[XrayUser, ...]:
         try:

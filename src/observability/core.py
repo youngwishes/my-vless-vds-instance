@@ -7,7 +7,7 @@ import logging
 import math
 from threading import RLock
 from types import MappingProxyType
-from typing import Mapping, final
+from typing import Mapping, Protocol, final
 
 
 _LOGGER = logging.getLogger("vless_agent.observability")
@@ -35,6 +35,18 @@ class EventCode(StrEnum):
     XRAY_TIMEOUT = "xray_timeout"
     XRAY_UNAVAILABLE = "xray_unavailable"
     XRAY_PROTOCOL_FAILURE = "xray_protocol_failure"
+
+
+class EventObserver(Protocol):
+    def record(self, code: EventCode) -> None: ...
+
+
+class ApplyObserver(EventObserver, Protocol):
+    def observe_apply(self, *, succeeded: bool, latency_seconds: float) -> None: ...
+
+
+class Observer(ApplyObserver, Protocol):
+    def snapshot(self) -> MetricsSnapshot: ...
 
 
 @final
@@ -116,4 +128,11 @@ class Observability:
         _LOGGER.info(json.dumps(event, separators=(",", ":"), sort_keys=True))
 
 
-__all__ = ("EventCode", "MetricsSnapshot", "Observability")
+__all__ = (
+    "ApplyObserver",
+    "EventCode",
+    "EventObserver",
+    "MetricsSnapshot",
+    "Observability",
+    "Observer",
+)

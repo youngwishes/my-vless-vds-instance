@@ -2,7 +2,21 @@
 
 from __future__ import annotations
 
-from src.observability.core import EventCode, MetricsSnapshot, Observability
+from src.observability.core import (
+    ApplyObserver,
+    EventCode,
+    EventObserver,
+    MetricsSnapshot,
+    Observability,
+    Observer,
+)
 
 
-__all__ = ("EventCode", "MetricsSnapshot", "Observability")
+__all__ = (
+    "ApplyObserver",
+    "EventCode",
+    "EventObserver",
+    "MetricsSnapshot",
+    "Observability",
+    "Observer",
+)

@@ -1,12 +1,12 @@
 from __future__ import annotations
 
-from dataclasses import dataclass, field as dataclass_field
+from dataclasses import dataclass
 from typing import Protocol, final
 
 import grpc
 
 from src.config import Settings
-from src.observability import Observability
+from src.observability import Observability, Observer
 from src.services import (
     AgentRuntimeState,
     ApplySnapshotService,
@@ -31,7 +31,7 @@ class AgentServices:
     get_snapshot: GetSnapshotService
     put_snapshot: SnapshotCoordinatorService
     startup_restore: StartupRestore
-    observability: Observability = dataclass_field(default_factory=Observability)
+    observer: Observer
 
 
 @final
@@ -98,7 +98,7 @@ def create_agent_services(*, settings: Settings) -> AgentServices:
             state=state,
             restore=StartupRestoreService(apply_accesses=apply_accesses, store=store),
         ),
-        observability=observability,
+        observer=observability,
     )
 
 

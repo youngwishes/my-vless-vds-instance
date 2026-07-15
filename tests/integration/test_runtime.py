@@ -16,6 +16,7 @@ import yaml
 
 from src.api.schemas import SnapshotDTO
 from src.factories import InitializeRuntimeService
+from src.observability import Observability
 from src.services import AgentRuntimeState, Readiness, StartupRestoreService
 from src.storage import SnapshotStore
 from src.xray.config_renderer import (
@@ -552,7 +553,7 @@ def test_persisted_snapshot_restores_before_recovery_readiness(
     snapshot = _snapshot(1, with_access)
     store.save(snapshot=snapshot)
     xray = _FakeXray()
-    state = AgentRuntimeState()
+    state = AgentRuntimeState(observer=Observability())
     initialize = InitializeRuntimeService(
         state=state,
         restore=StartupRestoreService(apply_accesses=xray, store=store),
