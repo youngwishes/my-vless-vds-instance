@@ -1,0 +1,13 @@
+---
+# Copy to an ignored *.vault.yml file and encrypt it with ansible-vault.
+# Values are deliberately non-secret placeholders and must be unique per node.
+vault_vless_agent_tokens:
+  node-test-1:
+    current: REPLACE_WITH_UNIQUE_RANDOM_TOKEN_AT_LEAST_32_CHARACTERS
+    next: ""
+  node-prod-1:
+    current: REPLACE_WITH_DIFFERENT_RANDOM_TOKEN_AT_LEAST_32_CHARACTERS
+    next: ""
+vault_reality_private_keys:
+  node-test-1: REPLACE_WITH_NODE_SPECIFIC_REALITY_PRIVATE_KEY
+  node-prod-1: REPLACE_WITH_DIFFERENT_REALITY_PRIVATE_KEY
