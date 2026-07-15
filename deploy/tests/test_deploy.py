@@ -17,6 +17,7 @@ DEPLOY = ROOT / "deploy"
 ROLE = DEPLOY / "roles" / "vless_agent"
 XRAY_DIGEST = "sha256:a1644183accdb0b5be967093fe34be756fd5de15fe2ee0206e842ae17350967f"
 REVIEWED_AGENT_SHA = "564dc521016cc7463f7e7870ceb159b60883cccb"
+BOOTSTRAP_AGENT_SHA = "fcc8f8a678638d97247a68cc6b17d3dfe0473ff2"
 MANAGEMENT_SUBNET = "172.31.255.0/28"
 
 
@@ -1503,11 +1504,9 @@ def test_documentation_covers_safe_rollout_recovery_rotation_and_approval() -> N
     assert "upgrade" in compatibility.lower() and "downgrade" in compatibility.lower()
     assert "a-007 runtime baseline" in normalized_compatibility
     assert "not a later infrastructure or ci revision" in normalized_compatibility
-    assert (
-        "intentionally does not claim a-010 has been test-deployed"
-        in normalized_compatibility
-    )
-    assert "does not yet add its candidate sha" in normalized_compatibility
+    assert "historical only; not operational direct-bridge rollback target" in compatibility
+    assert "a-010 direct-bridge bootstrap" in normalized_compatibility
+    assert BOOTSTRAP_AGENT_SHA in compatibility
 
 
 def test_operational_docs_define_direct_bridge_bootstrap_boundary() -> None:
@@ -1533,8 +1532,7 @@ def test_operational_docs_define_direct_bridge_bootstrap_boundary() -> None:
     assert "not an operational rollback target" in docs["docs/COMPATIBILITY.md"]
     assert REVIEWED_AGENT_SHA in docs["docs/COMPATIBILITY.md"]
     assert "bootstrap evidence" in combined and "external" in combined
-    assert "separate final tracked commit" in combined
-    assert "no bootstrap sha" in combined
+    assert "compatible direct-bridge rollback" in combined
 
     for example in (
         "deploy/group_vars/vless_test.example.yml",
@@ -1544,6 +1542,7 @@ def test_operational_docs_define_direct_bridge_bootstrap_boundary() -> None:
             "vless_agent_compatible_rollback_revisions"
         ]
         assert REVIEWED_AGENT_SHA not in rollback_revisions
+        assert rollback_revisions == [BOOTSTRAP_AGENT_SHA]
 
 
 def test_loopback_baseline_is_rejected_as_bootstrap_rollback_target() -> None:

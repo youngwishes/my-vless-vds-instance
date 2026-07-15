@@ -11,7 +11,7 @@ from src.release_evidence import EvidenceValidationError, validate_release_evide
 HEAD = "1" * 40
 XRAY_DIGEST = "sha256:a1644183accdb0b5be967093fe34be756fd5de15fe2ee0206e842ae17350967f"
 PROVENANCE_DIGEST = "ce97974d13f1f7b417feed1549cc08cc8aa0a9c5e8bfc26da03b99c8bd3e4763"
-ROLLBACK_SHA = "564dc521016cc7463f7e7870ceb159b60883cccb"
+BOOTSTRAP_SHA = "fcc8f8a678638d97247a68cc6b17d3dfe0473ff2"
 
 
 def valid_evidence() -> dict[str, object]:
@@ -42,19 +42,38 @@ def valid_evidence() -> dict[str, object]:
             "overflow_rejection": "pass",
             "restart_restore": "pass",
             "compatible_rollback_rehearsal": "pass",
+            "forward_redeploy": "pass",
         },
         "runtime": {
             "deployed_agent_sha": HEAD,
             "health_agent_sha": HEAD,
             "xray_version": "26.7.11",
             "xray_image_digest": XRAY_DIGEST,
-            "rollback_agent_sha": ROLLBACK_SHA,
+            "bootstrap_agent_sha": BOOTSTRAP_SHA,
+            "rollback_health_agent_sha": BOOTSTRAP_SHA,
+            "forward_deployed_agent_sha": HEAD,
+            "forward_health_agent_sha": HEAD,
         },
     }
 
 
 def test_accepts_complete_evidence_for_exact_expected_head() -> None:
     validate_release_evidence(valid_evidence(), expected_head=HEAD)
+
+
+def test_rejects_bootstrap_as_forward_candidate() -> None:
+    evidence = valid_evidence()
+    for field in ("candidate_sha", "ci_sha", "reviewed_sha", "test_deployed_sha"):
+        evidence[field] = BOOTSTRAP_SHA
+    evidence["runtime"]["deployed_agent_sha"] = BOOTSTRAP_SHA
+    evidence["runtime"]["health_agent_sha"] = BOOTSTRAP_SHA
+    evidence["runtime"]["forward_deployed_agent_sha"] = BOOTSTRAP_SHA
+    evidence["runtime"]["forward_health_agent_sha"] = BOOTSTRAP_SHA
+
+    with pytest.raises(EvidenceValidationError) as caught:
+        validate_release_evidence(evidence, expected_head=BOOTSTRAP_SHA)
+
+    assert str(caught.value) == "expected_head:value"
 
 
 @pytest.mark.parametrize(
@@ -83,9 +102,14 @@ def test_accepts_complete_evidence_for_exact_expected_head() -> None:
         (lambda value: value["checks"].__setitem__("smoke_notes", "ok"), "checks", "unknown"),
         (lambda value: value["runtime"].__setitem__("health_agent_sha", "2" * 40), "runtime.health_agent_sha", "mismatch"),
         (lambda value: value["runtime"].__setitem__("xray_version", "26.7.10"), "runtime.xray_version", "value"),
-        (lambda value: value["runtime"].pop("rollback_agent_sha"), "runtime.rollback_agent_sha", "missing"),
-        (lambda value: value["runtime"].__setitem__("rollback_agent_sha", "main"), "runtime.rollback_agent_sha", "format"),
-        (lambda value: value["runtime"].__setitem__("rollback_agent_sha", "2" * 40), "runtime.rollback_agent_sha", "value"),
+        (lambda value: value["checks"].pop("compatible_rollback_rehearsal"), "checks.compatible_rollback_rehearsal", "missing"),
+        (lambda value: value["checks"].__setitem__("forward_redeploy", "skipped"), "checks.forward_redeploy", "value"),
+        (lambda value: value["runtime"].pop("bootstrap_agent_sha"), "runtime.bootstrap_agent_sha", "missing"),
+        (lambda value: value["runtime"].__setitem__("bootstrap_agent_sha", "main"), "runtime.bootstrap_agent_sha", "format"),
+        (lambda value: value["runtime"].__setitem__("bootstrap_agent_sha", "2" * 40), "runtime.bootstrap_agent_sha", "value"),
+        (lambda value: value["runtime"].__setitem__("rollback_health_agent_sha", "2" * 40), "runtime.rollback_health_agent_sha", "value"),
+        (lambda value: value["runtime"].__setitem__("forward_deployed_agent_sha", "2" * 40), "runtime.forward_deployed_agent_sha", "mismatch"),
+        (lambda value: value["runtime"].__setitem__("forward_health_agent_sha", "2" * 40), "runtime.forward_health_agent_sha", "mismatch"),
     ],
 )
 def test_rejects_incomplete_or_non_exact_evidence(mutation, path: str, reason: str) -> None:
@@ -309,7 +333,7 @@ def test_invalid_utf8_provenance_fails_with_safe_content_reason(tmp_path: Path) 
     assert provenance.name not in str(caught.value)
 
 
-def test_rejects_if_local_compatibility_matrix_does_not_contain_reviewed_rollback(
+def test_rejects_if_local_compatibility_matrix_does_not_contain_reviewed_bootstrap(
     tmp_path: Path,
 ) -> None:
     compatibility = tmp_path / "COMPATIBILITY.md"

@@ -80,11 +80,14 @@ equal/subset/superset overlap, unexpected `.2`/`.3` occupant, ownership drift,
 or malformed inspect result as fail closed. Do not delete, recreate, connect,
 disconnect, or silently repair the network. Docker 29.6 loopback baseline
 `564dc521016cc7463f7e7870ceb159b60883cccb` is not an operational rollback
-target for this bootstrap; preserve state and use a reviewed forward fix.
+target for this bootstrap. The reviewed bootstrap
+`fcc8f8a678638d97247a68cc6b17d3dfe0473ff2` is the compatible direct-bridge
+rollback point. Rehearse rollback to that exact SHA, verify bootstrap health,
+then forward redeploy the candidate and verify its deployed and health SHAs.
 
-Bootstrap evidence is external and contains no secrets or free-form diagnostics.
-No bootstrap SHA is added to `COMPATIBILITY.md` until the separate final tracked
-commit completes its own gates.
+Bootstrap evidence is external and contains no secrets or free-form diagnostics;
+its closed fields separately record bootstrap, rollback-health, and
+forward-redeploy results.
 
 ## Authentication and rotation
 

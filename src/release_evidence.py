@@ -20,7 +20,7 @@ _XRAY_IMAGE_DIGEST = (
 _BACKEND_REPOSITORY = "my-mtproto-backend"
 _BACKEND_SOURCE_COMMIT = "507d152a3f3a404b9348ba3d57906f1dc225558c"
 _PROVENANCE_SHA256 = "ce97974d13f1f7b417feed1549cc08cc8aa0a9c5e8bfc26da03b99c8bd3e4763"
-_ROLLBACK_AGENT_SHA = "564dc521016cc7463f7e7870ceb159b60883cccb"
+_BOOTSTRAP_AGENT_SHA = "fcc8f8a678638d97247a68cc6b17d3dfe0473ff2"
 _DEFAULT_PROVENANCE_PATH = (
     Path(__file__).resolve().parents[1] / "docs/contracts/v1/PROVENANCE.sha256"
 )
@@ -55,13 +55,17 @@ _CHECK_KEYS = {
     "overflow_rejection",
     "restart_restore",
     "compatible_rollback_rehearsal",
+    "forward_redeploy",
 }
 _RUNTIME_KEYS = {
     "deployed_agent_sha",
     "health_agent_sha",
     "xray_version",
     "xray_image_digest",
-    "rollback_agent_sha",
+    "bootstrap_agent_sha",
+    "rollback_health_agent_sha",
+    "forward_deployed_agent_sha",
+    "forward_health_agent_sha",
 }
 
 
@@ -153,7 +157,7 @@ def _validate_compatibility(path: Path) -> None:
         _fail("runtime.rollback_compatibility_file", "content")
     reviewed_row = (
         "| contract v1 | snapshot schema 1.0 | "
-        f"{_XRAY_VERSION} / `{_XRAY_IMAGE_DIGEST}` | `{_ROLLBACK_AGENT_SHA}` |"
+        f"{_XRAY_VERSION} / `{_XRAY_IMAGE_DIGEST}` | `{_BOOTSTRAP_AGENT_SHA}` |"
     )
     if text.count(reviewed_row) != 1:
         _fail("runtime.rollback_compatibility_file", "content")
@@ -187,6 +191,8 @@ def validate_release_evidence(
 ) -> None:
     if _SHA_PATTERN.fullmatch(expected_head) is None:
         _fail("expected_head", "format")
+    if expected_head == _BOOTSTRAP_AGENT_SHA:
+        _fail("expected_head", "value")
 
     document = _object(evidence, path="evidence")
     _exact_keys(document, _TOP_LEVEL_KEYS)
@@ -227,7 +233,12 @@ def validate_release_evidence(
 
     runtime = _object(document["runtime"], path="runtime")
     _exact_keys(runtime, _RUNTIME_KEYS, path="runtime")
-    for field in ("deployed_agent_sha", "health_agent_sha"):
+    for field in (
+        "deployed_agent_sha",
+        "health_agent_sha",
+        "forward_deployed_agent_sha",
+        "forward_health_agent_sha",
+    ):
         _sha(runtime[field], path=f"runtime.{field}", expected_head=expected_head)
     _exact(runtime["xray_version"], _XRAY_VERSION, path="runtime.xray_version")
     _exact(
@@ -235,11 +246,12 @@ def validate_release_evidence(
         _XRAY_IMAGE_DIGEST,
         path="runtime.xray_image_digest",
     )
-    _fixed_sha(
-        runtime["rollback_agent_sha"],
-        path="runtime.rollback_agent_sha",
-        expected=_ROLLBACK_AGENT_SHA,
-    )
+    for field in ("bootstrap_agent_sha", "rollback_health_agent_sha"):
+        _fixed_sha(
+            runtime[field],
+            path=f"runtime.{field}",
+            expected=_BOOTSTRAP_AGENT_SHA,
+        )
     _validate_compatibility(compatibility_path)
 
 

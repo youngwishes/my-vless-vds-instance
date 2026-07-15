@@ -156,7 +156,9 @@ force an unreviewed schema downgrade.
 
 For this direct-bridge bootstrap, Docker 29.6 loopback baseline
 `564dc521016cc7463f7e7870ceb159b60883cccb` is not an operational rollback
-target and the role rejects it in the compatible list. Bootstrap evidence is an
-external operator artifact. No bootstrap SHA is added to the compatibility
-matrix until the separate final tracked commit has its own CI, review, test
-deployment, smoke, and evidence.
+target and the role rejects it in the compatible list. The reviewed bootstrap
+`fcc8f8a678638d97247a68cc6b17d3dfe0473ff2` is the compatible direct-bridge
+rollback point and may be placed in that list. The external operator evidence
+separately records the bootstrap SHA, a successful rollback rehearsal with
+health at the bootstrap, and a successful forward redeploy with candidate
+health.

@@ -44,5 +44,7 @@ That bridge has gateway `172.31.255.1`, Xray `172.31.255.2`, and agent
 `172.31.255.3`; the agent has no host binding. Deployment fails closed on CIDR
 overlap, malformed inspection data, ownership drift, endpoint drift, or runtime
 topology drift and never repairs a suspect network. Bootstrap evidence stays
-external, and no bootstrap SHA enters the compatibility matrix before the
-separate final tracked commit.
+external. The compatibility matrix binds the reviewed direct-bridge bootstrap
+`fcc8f8a678638d97247a68cc6b17d3dfe0473ff2`; the closed evidence separately
+records bootstrap identity, rollback health, and forward deployment and health
+without secrets, hosts, or IP addresses.

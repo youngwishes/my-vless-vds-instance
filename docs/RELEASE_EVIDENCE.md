@@ -5,12 +5,11 @@ CI, test deployment, smoke results, and authenticated runtime health must all
 refer to that same SHA. The evidence JSON is an external operator artifact:
 `release-evidence*.json` is ignored and a filled report must never be committed.
 
-The direct-bridge bootstrap evidence is also external. This tracked template and
-compatibility matrix are not updated with a bootstrap SHA during the uncommitted
-bootstrap itself; that happens only in a separate final tracked commit after the
-new topology's CI, review, test deployment, and smoke. Docker 29.6 loopback
-baseline `564dc521016cc7463f7e7870ceb159b60883cccb` is not an operational
-rollback target for that bootstrap.
+The direct-bridge bootstrap evidence is also external. The reviewed bootstrap
+SHA is `fcc8f8a678638d97247a68cc6b17d3dfe0473ff2`; the compatibility matrix binds
+it as the compatible direct-bridge rollback point. Docker 29.6 loopback baseline
+`564dc521016cc7463f7e7870ceb159b60883cccb` remains historical A-007 evidence,
+not an operational direct-bridge rollback target.
 
 ## Closed evidence schema
 
@@ -52,14 +51,18 @@ must not exceed 64 KiB.
     "conflict_rejection": "pass",
     "overflow_rejection": "pass",
     "restart_restore": "pass",
-    "compatible_rollback_rehearsal": "pass"
+    "compatible_rollback_rehearsal": "pass",
+    "forward_redeploy": "pass"
   },
   "runtime": {
     "deployed_agent_sha": "<same-exact-sha>",
     "health_agent_sha": "<same-exact-sha>",
     "xray_version": "26.7.11",
     "xray_image_digest": "sha256:a1644183accdb0b5be967093fe34be756fd5de15fe2ee0206e842ae17350967f",
-    "rollback_agent_sha": "564dc521016cc7463f7e7870ceb159b60883cccb"
+    "bootstrap_agent_sha": "fcc8f8a678638d97247a68cc6b17d3dfe0473ff2",
+    "rollback_health_agent_sha": "fcc8f8a678638d97247a68cc6b17d3dfe0473ff2",
+    "forward_deployed_agent_sha": "<same-exact-sha>",
+    "forward_health_agent_sha": "<same-exact-sha>"
   }
 }
 ```
@@ -72,9 +75,13 @@ selected file or fixture.
 `authenticated_https_health_ready: pass` means the authenticated request used
 verified HTTPS, health reported `READY`, and the response carried the exact
 candidate agent SHA plus pinned Xray version and image digest. HTTP 200 alone is
-not a pass. `rollback_agent_sha` binds the compatible rollback rehearsal to the
-reviewed baseline in `COMPATIBILITY.md`; the validator also verifies that exact
-contract v1, snapshot schema 1.0, Xray version/digest and SHA matrix row locally.
+not a pass. `bootstrap_agent_sha` binds the compatible rollback rehearsal to the
+reviewed bootstrap in `COMPATIBILITY.md`, and `rollback_health_agent_sha` proves
+health after returning to that exact bootstrap. `forward_deployed_agent_sha` and
+`forward_health_agent_sha` must both match the candidate, while
+`forward_redeploy: pass` records the separate successful forward operation. The
+validator also verifies the exact contract v1, snapshot schema 1.0, Xray
+version/digest and bootstrap SHA matrix row locally.
 
 Do not add IP addresses, hostnames, bearer tokens, certificate content, UUIDs,
 snapshot bodies or hashes, REALITY keys, subscription URLs, free-form notes, or
