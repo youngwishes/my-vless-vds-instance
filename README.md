@@ -82,3 +82,11 @@ The central backend remains the source of truth for subscriptions and node
 access. Xray is a source-derived runtime that will receive reviewed exact-set
 snapshots from that backend. 3x-ui is not an authoritative writer and must not
 be used to mutate the managed access set.
+
+The agent exclusively owns users on its configured managed inbound. It derives
+stable identities as `vless-access-<access_id>@agent.invalid`, reconciles that
+inbound to the exact desired UUID set, and never mutates any other inbound tag.
+The adapter is tested with Xray 26.7.11 against `HandlerService` operations
+`GetInboundUsers` and `AlterInbound` using `AddUserOperation` and
+`RemoveUserOperation`. The Xray gRPC management listener must remain private and
+must never be exposed to the public network.
