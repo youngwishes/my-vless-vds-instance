@@ -125,17 +125,14 @@ def _client(*, probe: Mock | None = None, apply: Mock | None = None) -> tuple[_C
             agent_sha=settings.agent_sha,
             xray_version=settings.xray_version,
             xray_image_digest=settings.xray_image_digest,
-            observer=observer,
         ),
         get_snapshot=GetSnapshotService(state=state),
         put_snapshot=SnapshotCoordinatorService(
             state=state,
             apply_snapshot=apply,
             exact_set_matches=probe,
-            observer=observer,
         ),
-        startup_restore=Mock(return_value=None),
-        observer=observer,
+        startup_restore=Mock(state=state, return_value=None),
     )
     return _Client(create_app(settings=settings, services=services)), state
 

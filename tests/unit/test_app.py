@@ -55,15 +55,18 @@ def test_startup_restore_is_offloaded_from_async_event_loop() -> None:
         agent_token_current="explicit-test-token",
     )
     called_from: list[int] = []
-    startup = Mock(side_effect=lambda: called_from.append(threading.get_ident()))
+    startup = Mock(
+        side_effect=lambda: called_from.append(threading.get_ident())
+    )
     observer = Observability()
+    state = AgentRuntimeState(observer=observer)
+    startup.state = state
     services = AgentServices(
-        state=AgentRuntimeState(observer=observer),
-        get_health=Mock(),
-        get_snapshot=Mock(),
-        put_snapshot=Mock(),
+        state=state,
+        get_health=Mock(state=state),
+        get_snapshot=Mock(state=state),
+        put_snapshot=Mock(state=state),
         startup_restore=startup,
-        observer=observer,
     )
     app = create_app(settings=settings, services=services)
 

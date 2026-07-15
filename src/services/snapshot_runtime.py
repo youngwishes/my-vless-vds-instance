@@ -2,11 +2,12 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from enum import StrEnum
+import time
 from threading import RLock
-from typing import TYPE_CHECKING, Protocol, final
+from typing import TYPE_CHECKING, Callable, Protocol, final
 
 from src.domain import validate_snapshot
-from src.observability import EventCode, EventObserver
+from src.observability import EventCode, Observer
 
 if TYPE_CHECKING:
     from src.api.schemas import SnapshotDTO
@@ -48,7 +49,7 @@ class ApplySnapshotResult:
 @final
 @dataclass(kw_only=True, slots=True, frozen=True)
 class AgentRuntimeState:
-    observer: EventObserver
+    observer: Observer
     lock: RLock = field(default_factory=RLock)
     _status: list[RuntimeStatus] = field(
         default_factory=lambda: [
@@ -110,7 +111,7 @@ class SnapshotCoordinatorService:
     state: AgentRuntimeState
     apply_snapshot: ApplySnapshot
     exact_set_matches: ExactSetMatches
-    observer: EventObserver
+    monotonic: Callable[[], float] = time.monotonic
 
     def __call__(self, *, snapshot: SnapshotDTO) -> ApplySnapshotResult:
         validated = validate_snapshot(snapshot)
@@ -118,12 +119,12 @@ class SnapshotCoordinatorService:
             current = self.state.read().snapshot
             if current is not None:
                 if validated.snapshot_revision < current.snapshot_revision:
-                    self.observer.record(EventCode.REVISION_DRIFT)
+                    self.state.observer.record(EventCode.REVISION_DRIFT)
                     self.state.record_not_ready()
                     raise StaleRevisionError
                 if validated.snapshot_revision == current.snapshot_revision:
                     if validated.snapshot_hash != current.snapshot_hash:
-                        self.observer.record(EventCode.REVISION_CONFLICT)
+                        self.state.observer.record(EventCode.REVISION_CONFLICT)
                         self.state.record_not_ready()
                         raise RevisionConflictError
                     try:
@@ -133,17 +134,26 @@ class SnapshotCoordinatorService:
                         raise
                     self.state.record_applied(snapshot=current, matches=matches)
                     if not matches:
-                        self.observer.record(EventCode.REVISION_DRIFT)
+                        self.state.observer.record(EventCode.REVISION_DRIFT)
                     return ApplySnapshotResult(
                         result=ApplySnapshotResultKind.NO_OP,
                         snapshot=current,
                     )
 
+            started = self.monotonic()
             try:
                 applied = self.apply_snapshot(snapshot=validated)
             except BaseException:
+                self.state.observer.observe_apply(
+                    succeeded=False,
+                    latency_seconds=max(0.0, self.monotonic() - started),
+                )
                 self.state.record_not_ready()
                 raise
+            self.state.observer.observe_apply(
+                succeeded=True,
+                latency_seconds=max(0.0, self.monotonic() - started),
+            )
             self.state.record_applied(snapshot=applied, matches=False)
             try:
                 matches = self.exact_set_matches(accesses=applied.accesses)
@@ -151,7 +161,7 @@ class SnapshotCoordinatorService:
                 raise
             self.state.record_applied(snapshot=applied, matches=matches)
             if not matches:
-                self.observer.record(EventCode.REVISION_DRIFT)
+                self.state.observer.record(EventCode.REVISION_DRIFT)
             return ApplySnapshotResult(
                 result=ApplySnapshotResultKind.APPLIED,
                 snapshot=applied,

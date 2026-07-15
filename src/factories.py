@@ -6,7 +6,7 @@ from typing import Protocol, final
 import grpc
 
 from src.config import Settings
-from src.observability import Observability, Observer
+from src.observability import Observability
 from src.services import (
     AgentRuntimeState,
     ApplySnapshotService,
@@ -20,6 +20,8 @@ from src.xray import ApplyExactSetService, ExactSetMatchesService, GrpcXrayClien
 
 
 class StartupRestore(Protocol):
+    state: AgentRuntimeState
+
     def __call__(self) -> object: ...
 
 
@@ -31,7 +33,18 @@ class AgentServices:
     get_snapshot: GetSnapshotService
     put_snapshot: SnapshotCoordinatorService
     startup_restore: StartupRestore
-    observer: Observer
+
+    def __post_init__(self) -> None:
+        if any(
+            service.state is not self.state
+            for service in (
+                self.get_health,
+                self.get_snapshot,
+                self.put_snapshot,
+                self.startup_restore,
+            )
+        ):
+            raise ValueError("all agent services must share the same runtime state")
 
 
 @final
@@ -75,7 +88,6 @@ def create_agent_services(*, settings: Settings) -> AgentServices:
     apply_snapshot = ApplySnapshotService(
         apply_accesses=apply_accesses,
         store=store,
-        observer=observability,
     )
     return AgentServices(
         state=state,
@@ -85,20 +97,17 @@ def create_agent_services(*, settings: Settings) -> AgentServices:
             agent_sha=settings.agent_sha,
             xray_version=settings.xray_version,
             xray_image_digest=settings.xray_image_digest,
-            observer=observability,
         ),
         get_snapshot=GetSnapshotService(state=state),
         put_snapshot=SnapshotCoordinatorService(
             state=state,
             apply_snapshot=apply_snapshot,
             exact_set_matches=probe,
-            observer=observability,
         ),
         startup_restore=InitializeRuntimeService(
             state=state,
             restore=StartupRestoreService(apply_accesses=apply_accesses, store=store),
         ),
-        observer=observability,
     )
 
 

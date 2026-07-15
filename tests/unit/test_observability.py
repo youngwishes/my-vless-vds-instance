@@ -51,7 +51,6 @@ def test_conflict_and_health_drift_use_stable_bounded_counters() -> None:
         state=state,
         apply_snapshot=Mock(),
         exact_set_matches=Mock(return_value=True),
-        observer=observer,
     )
 
     with pytest.raises(RevisionConflictError):
@@ -63,7 +62,6 @@ def test_conflict_and_health_drift_use_stable_bounded_counters() -> None:
         agent_sha="a" * 40,
         xray_version="26.7.11",
         xray_image_digest="sha256:" + "b" * 64,
-        observer=observer,
     )
     health()
 
@@ -92,28 +90,31 @@ def test_readiness_counters_identify_each_target_and_ignore_same_state() -> None
     assert counters["readiness_not_ready"] == 1
 
 
-def test_manual_composition_requires_and_shares_exactly_one_observer() -> None:
-    observer_owners = (
+def test_manual_composition_has_one_structural_observer_source_for_all_flows() -> None:
+    state_observer = next(
+        item for item in fields(AgentRuntimeState) if item.name == "observer"
+    )
+    assert state_observer.default is MISSING
+    assert state_observer.default_factory is MISSING
+    for owner in (
         AgentServices,
-        AgentRuntimeState,
         ApplySnapshotService,
         GetHealthService,
         SnapshotCoordinatorService,
-    )
-    for owner in observer_owners:
-        observer_field = next(item for item in fields(owner) if item.name == "observer")
-        assert observer_field.default is MISSING
-        assert observer_field.default_factory is MISSING
+    ):
+        assert "observer" not in {item.name for item in fields(owner)}
 
     observer = Observability()
-    current = _snapshot(2)
+    current = _snapshot(1)
     state = AgentRuntimeState(observer=observer)
-    probe = Mock(return_value=False)
+    probe = Mock(return_value=True)
+    apply = Mock(return_value=current)
+    times = iter((1.0, 1.05, 2.0, 2.2))
     coordinator = SnapshotCoordinatorService(
         state=state,
-        apply_snapshot=Mock(),
+        apply_snapshot=apply,
         exact_set_matches=probe,
-        observer=observer,
+        monotonic=lambda: next(times),
     )
     services = AgentServices(
         state=state,
@@ -123,12 +124,10 @@ def test_manual_composition_requires_and_shares_exactly_one_observer() -> None:
             agent_sha="a" * 40,
             xray_version="26.7.11",
             xray_image_digest="sha256:" + "b" * 64,
-            observer=observer,
         ),
-        get_snapshot=Mock(),
+        get_snapshot=Mock(state=state),
         put_snapshot=coordinator,
-        startup_restore=Mock(),
-        observer=observer,
+        startup_restore=Mock(state=state),
     )
     app = create_app(
         settings=Settings(
@@ -140,26 +139,74 @@ def test_manual_composition_requires_and_shares_exactly_one_observer() -> None:
     )
 
     assert app.state.observability is observer
-    state.record_applied(snapshot=current, matches=True)
+    coordinator(snapshot=current)
     with pytest.raises(RevisionConflictError):
-        coordinator(snapshot=_snapshot(2, access_id=2))
+        coordinator(snapshot=_snapshot(1, access_id=2))
     state.record_applied(snapshot=current, matches=True)
+    probe.return_value = False
     services.get_health()
+    failure = RuntimeError("safe propagation sentinel")
+    apply.side_effect = failure
+    with pytest.raises(RuntimeError) as captured:
+        coordinator(snapshot=_snapshot(2))
 
+    assert captured.value is failure
     counters = observer.snapshot().counters
     assert counters[EventCode.READINESS_READY.value] == 2
     assert counters[EventCode.READINESS_NOT_READY.value] == 2
     assert counters[EventCode.REVISION_CONFLICT.value] == 1
     assert counters[EventCode.REVISION_DRIFT.value] == 1
+    assert counters[EventCode.APPLY_SUCCESS.value] == 1
+    assert counters[EventCode.APPLY_FAILURE.value] == 1
+    assert observer.snapshot().apply_latency_count == 2
+
+
+def test_agent_services_rejects_nested_service_bound_to_another_state() -> None:
+    observer = Observability()
+    state = AgentRuntimeState(observer=observer)
+    other_state = AgentRuntimeState(observer=Observability())
+    health = GetHealthService(
+        state=other_state,
+        exact_set_matches=Mock(return_value=True),
+        agent_sha="a" * 40,
+        xray_version="26.7.11",
+        xray_image_digest="sha256:" + "b" * 64,
+    )
+
+    with pytest.raises(ValueError, match="same runtime state"):
+        AgentServices(
+            state=state,
+            get_health=health,
+            get_snapshot=Mock(state=state),
+            put_snapshot=Mock(state=state),
+            startup_restore=Mock(state=state),
+        )
+
+    valid_health = GetHealthService(
+        state=state,
+        exact_set_matches=Mock(return_value=True),
+        agent_sha="a" * 40,
+        xray_version="26.7.11",
+        xray_image_digest="sha256:" + "b" * 64,
+    )
+    with pytest.raises(ValueError, match="same runtime state"):
+        AgentServices(
+            state=state,
+            get_health=valid_health,
+            get_snapshot=Mock(state=state),
+            put_snapshot=Mock(state=state),
+            startup_restore=Mock(state=other_state),
+        )
 
 
 def test_apply_latency_is_deterministic_and_bucketed() -> None:
     observer = Observability()
     times = iter((10.0, 10.075))
-    service = ApplySnapshotService(
-        apply_accesses=Mock(),
-        store=Mock(),
-        observer=observer,
+    state = AgentRuntimeState(observer=observer)
+    service = SnapshotCoordinatorService(
+        state=state,
+        apply_snapshot=Mock(side_effect=lambda *, snapshot: snapshot),
+        exact_set_matches=Mock(return_value=True),
         monotonic=lambda: next(times),
     )
 
@@ -193,10 +240,10 @@ def test_failure_event_logs_and_metrics_never_include_sensitive_context(
     failure = RuntimeError(" | ".join(sentinels))
     observer = Observability()
     times = iter((1.0, 1.2))
-    service = ApplySnapshotService(
-        apply_accesses=Mock(side_effect=failure),
-        store=Mock(),
-        observer=observer,
+    service = SnapshotCoordinatorService(
+        state=AgentRuntimeState(observer=observer),
+        apply_snapshot=Mock(side_effect=failure),
+        exact_set_matches=Mock(),
         monotonic=lambda: next(times),
     )
 
@@ -291,11 +338,10 @@ def test_startup_restore_failure_emits_only_safe_fixed_event(
     state = AgentRuntimeState(observer=observer)
     services = AgentServices(
         state=state,
-        get_health=Mock(),
-        get_snapshot=Mock(),
-        put_snapshot=Mock(),
-        startup_restore=Mock(side_effect=RuntimeError(sentinel)),
-        observer=observer,
+        get_health=Mock(state=state),
+        get_snapshot=Mock(state=state),
+        put_snapshot=Mock(state=state),
+        startup_restore=Mock(state=state, side_effect=RuntimeError(sentinel)),
     )
     app = create_app(
         settings=Settings(

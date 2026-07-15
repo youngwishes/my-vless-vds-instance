@@ -10,7 +10,6 @@ import pytest
 
 from src.api.schemas import AccessDTO, SnapshotDTO
 from src.domain import InvalidSnapshotError
-from src.observability import Observability
 from src.services import (
     ApplyCheckpoint,
     ApplySnapshotService,
@@ -67,7 +66,6 @@ def _apply(
     return ApplySnapshotService(
         apply_accesses=xray,
         store=store,
-        observer=Observability(),
         checkpoint_hook=checkpoint_hook,
     )
 
@@ -194,7 +192,6 @@ def test_invalid_desired_snapshot_is_rejected_before_checkpoint_or_xray(
         ApplySnapshotService(
             apply_accesses=xray,
             store=SnapshotStore(path=tmp_path / "snapshot.json"),
-            observer=Observability(),
             checkpoint_hook=lambda *, checkpoint: checkpoints.append(checkpoint),
         )(snapshot=invalid)
 

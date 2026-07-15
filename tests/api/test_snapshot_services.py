@@ -47,7 +47,6 @@ def _service(*, state: AgentRuntimeState, apply: Mock, probe: Mock):
         state=state,
         apply_snapshot=apply,
         exact_set_matches=probe,
-        observer=state.observer,
     )
 
 
@@ -143,7 +142,6 @@ def test_compare_apply_persist_is_serialized_across_concurrent_requests() -> Non
         state=state,
         apply_snapshot=apply,
         exact_set_matches=lambda **_: True,
-        observer=state.observer,
     )
     errors: list[BaseException] = []
 
@@ -178,7 +176,6 @@ def test_health_read_only_probe_demotes_ready_on_runtime_drift() -> None:
         agent_sha="a" * 40,
         xray_version="25.7.1",
         xray_image_digest="sha256:" + "b" * 64,
-        observer=state.observer,
     )
 
     health = service()
@@ -198,7 +195,6 @@ def test_health_probe_failure_demotes_before_propagating() -> None:
         agent_sha="a" * 40,
         xray_version="25.7.1",
         xray_image_digest="sha256:" + "b" * 64,
-        observer=state.observer,
     )
 
     with pytest.raises(RuntimeError):
