@@ -22,12 +22,23 @@ Set the required public node identity and start the application factory:
 ```bash
 export VLESS_NODE_ID=local-node
 export ENVIRONMENT_MODE=local
+export AGENT_TOKEN_CURRENT="$(python -c 'import secrets; print(secrets.token_urlsafe(32))')"
 make run
 ```
 
 `VLESS_NODE_ID` must be a non-empty identifier assigned to this node.
 `ENVIRONMENT_MODE` accepts `local`, `test`, or `production` and defaults to
 `production`. Startup fails before serving when the node identity is absent.
+Production also requires a unique per-node `AGENT_TOKEN_CURRENT` of at least 32
+characters. Generate tokens with a cryptographically secure generator, such as
+`python -c 'import secrets; print(secrets.token_urlsafe(32))'`; never commit or
+log their values. To rotate without downtime, set a separately generated
+`AGENT_TOKEN_NEXT`, switch the backend after health/reconcile succeeds, then
+promote next to current and remove the overlap value.
+
+Every agent endpoint, including health, must be exposed only through HTTPS with
+certificate verification enabled. Plain HTTP is not a supported deployment,
+including on private networks.
 
 Run tests and validate production Compose:
 
@@ -44,10 +55,11 @@ Start the local container with a source bind mount and reload enabled:
 docker compose -f docker-compose.local.yml up --build
 ```
 
-Production Compose does not mount source code and requires the node identity:
+Production Compose does not mount source code and requires the node identity
+and bearer token:
 
 ```bash
-VLESS_NODE_ID=example-node docker compose -f docker-compose.yml up --build -d
+VLESS_NODE_ID=example-node AGENT_TOKEN_CURRENT=secure-token-from-secret-store docker compose -f docker-compose.yml up --build -d
 ```
 
 The image runs the agent as a non-root user. No secrets or environment files
