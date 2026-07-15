@@ -10,8 +10,8 @@ ENV PATH="/app/.venv/bin:$PATH" \
 
 WORKDIR /app
 
-RUN groupadd --system agent \
-    && useradd --system --gid agent --home-dir /app agent
+RUN groupadd --system --gid 999 agent \
+    && useradd --system --uid 999 --gid agent --home-dir /app agent
 
 COPY pyproject.toml uv.lock README.md ./
 RUN uv sync --frozen --no-dev --no-install-project

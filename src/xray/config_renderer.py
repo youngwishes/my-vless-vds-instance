@@ -110,7 +110,7 @@ def _hostname(value: str, *, label: str) -> str:
     return ascii_value.lower()
 
 
-def _target(environment: Mapping[str, str]) -> tuple[str, int, str]:
+def _target(environment: Mapping[str, str]) -> tuple[str, int]:
     value = _required(environment, "REALITY_TARGET", "REALITY target")
     host, separator, raw_port = value.rpartition(":")
     if not separator or not host or not raw_port.isascii() or not raw_port.isdecimal():
@@ -119,7 +119,18 @@ def _target(environment: Mapping[str, str]) -> tuple[str, int, str]:
     port = int(raw_port)
     if not 1 <= port <= 65535:
         raise RuntimeConfigError("REALITY target port is invalid")
-    return hostname, port, f"{hostname}:{port}"
+    return hostname, port
+
+
+def _management_ip(environment: Mapping[str, str]) -> str:
+    raw = _required(environment, "XRAY_MANAGEMENT_IP", "Xray management IP")
+    try:
+        address = ipaddress.ip_address(raw)
+    except ValueError:
+        raise RuntimeConfigError("Xray management IP is malformed") from None
+    if address.version != 4 or not address.is_private or address.is_unspecified:
+        raise RuntimeConfigError("Xray management IP must be a private IPv4 address")
+    return address.compressed
 
 
 def _short_ids(environment: Mapping[str, str]) -> list[str]:
@@ -207,16 +218,23 @@ def _verified_tls_connection(address: str, port: int, sni: str, timeout: float) 
 def _preflight(
     *, host: str, port: int, sni: str, resolver: Resolver,
     tls_connector: TLSConnector, timeout: float,
-) -> None:
-    for address in _public_addresses(
+) -> tuple[str, ...]:
+    addresses = _public_addresses(
         host=host, port=port, resolver=resolver, timeout=timeout
-    ):
+    )
+    for address in addresses:
         try:
             negotiated = tls_connector(address, port, sni, timeout)
         except (OSError, ssl.SSLError, TimeoutError):
             raise RuntimeConfigError("REALITY target TLS verification failed") from None
         if negotiated != "TLSv1.3":
             raise RuntimeConfigError("REALITY target must accept verified TLS 1.3")
+    return addresses
+
+
+def _concrete_target(*, address: str, port: int) -> str:
+    parsed = ipaddress.ip_address(address)
+    return f"[{parsed.compressed}]:{port}" if parsed.version == 6 else f"{parsed.compressed}:{port}"
 
 
 def _render(template: dict[str, Any], replacements: Mapping[str, object]) -> dict[str, Any]:
@@ -262,6 +280,12 @@ def _validate_semantics(config: dict[str, Any]) -> None:
     api_inbounds = [item for item in inbounds if item.get("tag") == "api-in"]
     if len(api_inbounds) != 1 or api_inbounds[0].get("port") != 10085:
         raise RuntimeConfigError("private HandlerService inbound is required")
+    try:
+        api_listen = ipaddress.ip_address(api_inbounds[0].get("listen", ""))
+    except ValueError:
+        raise RuntimeConfigError("private HandlerService listen address is malformed") from None
+    if api_listen.is_unspecified or not api_listen.is_private:
+        raise RuntimeConfigError("private HandlerService must bind a private address")
 
 
 def _atomic_write(*, path: Path, config: dict[str, Any]) -> None:
@@ -291,13 +315,22 @@ def render_xray_config(
     timeout_seconds: float = 5.0,
 ) -> dict[str, Any]:
     private_key = _private_key(environment)
-    host, port, target = _target(environment)
+    host, port = _target(environment)
+    management_ip = _management_ip(environment)
     sni = _hostname(_required(environment, "REALITY_SERVER_NAME", "REALITY server name"), label="REALITY server name")
     short_ids = _short_ids(environment)
     raw_public_port = environment.get("VLESS_PUBLIC_PORT", "443").strip()
     if not raw_public_port.isascii() or not raw_public_port.isdecimal() or not 1 <= int(raw_public_port) <= 65535:
         raise RuntimeConfigError("VLESS public port is invalid")
-    _preflight(host=host, port=port, sni=sni, resolver=resolver, tls_connector=tls_connector, timeout=timeout_seconds)
+    addresses = _preflight(
+        host=host,
+        port=port,
+        sni=sni,
+        resolver=resolver,
+        tls_connector=tls_connector,
+        timeout=timeout_seconds,
+    )
+    target = _concrete_target(address=addresses[0], port=port)
     try:
         template = json.loads(template_path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError):
@@ -308,6 +341,7 @@ def render_xray_config(
         "${REALITY_SERVER_NAME}": sni,
         "${REALITY_PRIVATE_KEY}": private_key,
         "${REALITY_SHORT_IDS}": short_ids,
+        "${XRAY_MANAGEMENT_IP}": management_ip,
     })
     _validate_semantics(config)
     for inbound in config["inbounds"]:

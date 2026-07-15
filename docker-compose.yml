@@ -1,9 +1,9 @@
 services:
-  xray-volume-init:
+  runtime-volume-init:
     build:
       context: .
     user: "0:0"
-    command: ["chown", "65532:65532", "/generated"]
+    command: ["sh", "-c", "chown 65532:65532 /generated && chown 999:999 /var/lib/vless-agent"]
     cap_drop: [ALL]
     cap_add: [CHOWN]
     read_only: true
@@ -11,6 +11,7 @@ services:
     security_opt: [no-new-privileges:true]
     volumes:
       - xray-config:/generated
+      - agent-snapshot:/var/lib/vless-agent
 
   xray-config:
     build:
@@ -19,7 +20,7 @@ services:
     command: ["/app/entrypoint.sh"]
     cap_drop: [ALL]
     depends_on:
-      xray-volume-init:
+      runtime-volume-init:
         condition: service_completed_successfully
     environment:
       REALITY_PRIVATE_KEY_FILE: /run/secrets/reality_private_key
@@ -27,6 +28,7 @@ services:
       REALITY_SERVER_NAME: ${REALITY_SERVER_NAME:-}
       REALITY_SHORT_IDS: ${REALITY_SHORT_IDS:-}
       VLESS_PUBLIC_PORT: ${VLESS_PUBLIC_PORT:-443}
+      XRAY_MANAGEMENT_IP: 172.31.255.2
       XRAY_CONFIG_TEMPLATE: /app/xray/config.template.json
       XRAY_CONFIG_OUTPUT: /generated/config.json
     read_only: true
@@ -47,12 +49,15 @@ services:
       xray-config:
         condition: service_completed_successfully
     healthcheck:
-      test: ["CMD", "/usr/local/bin/xray", "api", "lsi", "--server=127.0.0.1:10085", "--timeout=3", "--isOnlyTags=true"]
+      test: ["CMD", "/usr/local/bin/xray", "api", "lsi", "--server=172.31.255.2:10085", "--timeout=3", "--isOnlyTags=true"]
       interval: 5s
       timeout: 4s
       retries: 12
       start_period: 3s
-    networks: [management, public]
+    networks:
+      management:
+        ipv4_address: 172.31.255.2
+      public: {}
     ports:
       - "${VLESS_PUBLIC_PORT:-443}:${VLESS_PUBLIC_PORT:-443}/tcp"
     read_only: true
@@ -68,6 +73,8 @@ services:
     user: agent
     cap_drop: [ALL]
     depends_on:
+      runtime-volume-init:
+        condition: service_completed_successfully
       xray:
         condition: service_healthy
     environment:
@@ -78,7 +85,7 @@ services:
       AGENT_SHA: ${AGENT_SHA:?AGENT_SHA must be set}
       XRAY_VERSION: "26.7.11"
       XRAY_IMAGE_DIGEST: sha256:a1644183accdb0b5be967093fe34be756fd5de15fe2ee0206e842ae17350967f
-      XRAY_API_TARGET: xray:10085
+      XRAY_API_TARGET: 172.31.255.2:10085
       XRAY_API_TIMEOUT_SECONDS: ${XRAY_API_TIMEOUT_SECONDS:-5}
       XRAY_MANAGED_INBOUND_TAG: vless-managed
       SNAPSHOT_PATH: /var/lib/vless-agent/snapshot.json
@@ -101,6 +108,9 @@ services:
 networks:
   management:
     internal: true
+    ipam:
+      config:
+        - subnet: 172.31.255.0/28
   public:
 
 volumes:

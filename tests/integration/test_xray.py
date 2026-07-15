@@ -1,17 +1,21 @@
 from __future__ import annotations
 
 import json
+import hashlib
 import shutil
 import socket
 import subprocess
 import time
 from collections.abc import Iterator
+from pathlib import Path
 
 import pytest
 
-from src.api.schemas import AccessDTO
+from src.api.schemas import AccessDTO, SnapshotDTO
 from src.app import create_app
 from src.config import EnvironmentMode, Settings
+from src.services import RecoveryStatus, StartupRestoreService
+from src.storage import SnapshotStore
 from src.xray import (
     VLESS_VISION_FLOW,
     XrayUser,
@@ -21,10 +25,7 @@ from src.xray import (
 
 
 XRAY_VERSION = "26.7.11"
-XRAY_IMAGE = (
-    "teddysun/xray:26.7.11@"
-    "sha256:1a733f97199801d00015cd5ecd2265c6af5dcf42c9282670e131a6b152840802"
-)
+XRAY_IMAGE = "ghcr.io/xtls/xray-core@sha256:a1644183accdb0b5be967093fe34be756fd5de15fe2ee0206e842ae17350967f"
 MANAGED_TAG = "vless-managed"
 UNMANAGED_TAG = "vless-unmanaged"
 
@@ -120,7 +121,7 @@ def real_xray(tmp_path_factory: pytest.TempPathFactory) -> Iterator[str]:
         "--publish",
         f"127.0.0.1:{api_port}:10085",
         "--volume",
-        f"{config_path}:/etc/xray/config.json:ro",
+        f"{config_path}:/usr/local/etc/xray/config.json:ro",
         XRAY_IMAGE,
     ]
     started = subprocess.run(command, capture_output=True, text=True, timeout=120)
@@ -145,7 +146,7 @@ def real_xray(tmp_path_factory: pytest.TempPathFactory) -> Iterator[str]:
             )
             pytest.fail(f"pinned Xray API did not become ready: {logs.stderr}{logs.stdout}")
         version = subprocess.run(
-            ["docker", "exec", container_name, "/usr/bin/xray", "version"],
+            ["docker", "exec", container_name, "/usr/local/bin/xray", "version"],
             capture_output=True,
             text=True,
             timeout=10,
@@ -163,6 +164,24 @@ def real_xray(tmp_path_factory: pytest.TempPathFactory) -> Iterator[str]:
 
 def _access(access_id: int, uuid: str, *, revision: int = 1) -> AccessDTO:
     return AccessDTO(access_id=access_id, uuid=uuid, access_revision=revision)
+
+
+def _snapshot(*, with_access: bool) -> SnapshotDTO:
+    accesses = [] if not with_access else [
+        {
+            "access_id": 7,
+            "uuid": "01890f47-a2d4-7c11-b3e6-89f40d8639f1",
+            "access_revision": 1,
+        }
+    ]
+    payload: dict[str, object] = {
+        "schema_version": "1.0",
+        "snapshot_revision": 1,
+        "accesses": accesses,
+    }
+    canonical = json.dumps(payload, separators=(",", ":"), sort_keys=True).encode()
+    payload["snapshot_hash"] = hashlib.sha256(canonical).hexdigest()
+    return SnapshotDTO.model_validate(payload)
 
 
 def test_real_xray_reconciles_exact_set_and_preserves_unmanaged_inbound(
@@ -209,6 +228,32 @@ def test_real_xray_reconciles_exact_set_and_preserves_unmanaged_inbound(
             flow="",
         ),
     )
+
+
+@pytest.mark.parametrize("with_access", (False, True), ids=("empty", "non-empty"))
+def test_pinned_official_xray_restores_persisted_snapshot(
+    real_xray: str, tmp_path: Path, with_access: bool
+) -> None:
+    service = create_apply_exact_set_service(
+        target=real_xray,
+        managed_inbound_tag=MANAGED_TAG,
+        timeout_seconds=3,
+    )
+    store = SnapshotStore(path=tmp_path / "snapshot.json")
+    snapshot = _snapshot(with_access=with_access)
+    store.save(snapshot=snapshot)
+
+    recovery = StartupRestoreService(apply_accesses=service, store=store)()
+
+    assert recovery.status is RecoveryStatus.RECOVERY_READY
+    expected = () if not with_access else (
+        XrayUser(
+            email=access_email(7),
+            uuid="01890f47-a2d4-7c11-b3e6-89f40d8639f1",
+            flow=VLESS_VISION_FLOW,
+        ),
+    )
+    assert service.client.get_inbound_users(tag=MANAGED_TAG) == expected
 
 
 def test_public_routes_contain_no_incremental_mutation_endpoint() -> None:

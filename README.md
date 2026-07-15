@@ -99,6 +99,16 @@ containers drop all capabilities and run non-root. All management routes
 require bearer authentication and the contract-version header; none is a
 public unauthenticated health route.
 
+The internal management network deliberately reserves `172.31.255.0/28` and
+assigns Xray `172.31.255.2`. The HandlerService listener binds only that address,
+so attaching Xray to the public bridge does not expose port 10085. Verify this
+subnet does not overlap host, VPC, or other Docker networks before deployment;
+if it does, change the Compose subnet, Xray static address, renderer management
+address, healthcheck target, and agent target together and rerun runtime tests.
+The one-shot volume initializer also assigns the generated-config volume to uid
+65532 and the durable snapshot volume to the pinned agent uid 999 before either
+runtime starts.
+
 ## Layout
 
 ```text
