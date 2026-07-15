@@ -132,8 +132,10 @@ class SnapshotStore:
                 raise SnapshotRecoveryError("durable snapshot changed during recovery")
             raw_payload = os.read(descriptor, MAX_PERSISTED_SNAPSHOT_BYTES + 1)
             final_metadata = os.fstat(descriptor)
+            _validate_snapshot_metadata(final_metadata)
             if (
                 len(raw_payload) > MAX_PERSISTED_SNAPSHOT_BYTES
+                or opened_metadata.st_mode != final_metadata.st_mode
                 or opened_metadata.st_size != len(raw_payload)
                 or opened_metadata.st_size != final_metadata.st_size
                 or (opened_metadata.st_dev, opened_metadata.st_ino)

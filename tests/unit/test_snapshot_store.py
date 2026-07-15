@@ -283,3 +283,22 @@ def test_load_is_bounded_and_rejects_file_size_races(
         SnapshotStore(path=path).load()
 
     assert observed_sizes == [MAX_PERSISTED_SNAPSHOT_BYTES + 1]
+
+
+def test_load_rejects_permission_change_during_bounded_read(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    path = tmp_path / "snapshot.json"
+    SnapshotStore(path=path).save(snapshot=_snapshot())
+    real_read = os.read
+
+    def chmod_during_read(descriptor: int, size: int) -> bytes:
+        path.chmod(0o640)
+        return real_read(descriptor, size)
+
+    monkeypatch.setattr(os, "read", chmod_during_read)
+
+    with pytest.raises(SnapshotRecoveryError) as captured:
+        SnapshotStore(path=path).load()
+
+    assert str(path) not in str(captured.value)

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 from dataclasses import FrozenInstanceError
 from pathlib import Path
 
@@ -195,4 +196,25 @@ def test_invalid_desired_snapshot_is_rejected_before_checkpoint_or_xray(
         )(snapshot=invalid)
 
     assert checkpoints == []
+    assert xray.calls == []
+
+
+def test_permission_race_during_startup_load_never_reaches_xray_or_ready_state(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    path = tmp_path / "snapshot.json"
+    store = SnapshotStore(path=path)
+    store.save(snapshot=_snapshot(1, 1))
+    xray = FakeXray()
+    real_read = os.read
+
+    def chmod_during_read(descriptor: int, size: int) -> bytes:
+        path.chmod(0o640)
+        return real_read(descriptor, size)
+
+    monkeypatch.setattr(os, "read", chmod_during_read)
+
+    with pytest.raises(SnapshotRecoveryError):
+        StartupRestoreService(apply_accesses=xray, store=store)()
+
     assert xray.calls == []
