@@ -422,6 +422,86 @@ def _expected_network() -> dict[str, object]:
     }
 
 
+def _canonical_builtin_network(*, name: str, driver: str) -> dict[str, object]:
+    return {
+        "Name": name,
+        "Id": ("a" if name == "host" else "b") * 64,
+        "Scope": "local",
+        "Driver": driver,
+        "EnableIPv4": True,
+        "EnableIPv6": False,
+        "IPAM": {"Driver": "default", "Options": None, "Config": None},
+        "Internal": False,
+        "Attachable": False,
+        "Ingress": False,
+        "ConfigOnly": False,
+        "Options": {},
+        "Labels": {},
+        "Containers": {},
+    }
+
+
+@pytest.mark.parametrize(("name", "driver"), [("host", "host"), ("none", "null")])
+def test_network_preflight_accepts_canonical_docker_builtin_without_subnets(
+    name: str, driver: str
+) -> None:
+    validator = _load_role_filters()["vless_agent_network_preflight_safe"]
+
+    assert validator(
+        [],
+        [],
+        [_canonical_builtin_network(name=name, driver=driver)],
+        [],
+        "vless-agent",
+    )
+
+
+@pytest.mark.parametrize(
+    "mutate",
+    [
+        lambda value: value.update(Name="foreign"),
+        lambda value: value.update(Name="none"),
+        lambda value: value.update(Driver="bridge"),
+        lambda value: value.update(Driver="null"),
+        lambda value: value.update(Scope="swarm"),
+        lambda value: value.update(EnableIPv4=False),
+        lambda value: value.update(EnableIPv6=True),
+        lambda value: value["IPAM"].update(Driver="custom"),
+        lambda value: value["IPAM"].update(Options={}),
+        lambda value: value["IPAM"].update(Config=[]),
+        lambda value: value["IPAM"].update(Unknown="value"),
+        lambda value: value.update(Internal=True),
+        lambda value: value.update(Attachable=True),
+        lambda value: value.update(Ingress=True),
+        lambda value: value.update(ConfigOnly=True),
+        lambda value: value.update(Options={"custom": "value"}),
+        lambda value: value.update(Labels={"custom": "value"}),
+        lambda value: value.update(Containers=[]),
+    ],
+)
+def test_network_preflight_rejects_docker_builtin_drift(mutate: object) -> None:
+    validator = _load_role_filters()["vless_agent_network_preflight_safe"]
+    network = _canonical_builtin_network(name="host", driver="host")
+    mutate(network)
+
+    assert not validator([], [], [network], [], "vless-agent")
+
+
+@pytest.mark.parametrize(
+    "network",
+    [
+        {"Name": "foreign", "Driver": "bridge", "IPAM": {"Config": None}},
+        {"Name": "host", "Driver": "host", "IPAM": {}},
+    ],
+)
+def test_network_preflight_rejects_noncanonical_null_or_missing_ipam_config(
+    network: dict[str, object],
+) -> None:
+    validator = _load_role_filters()["vless_agent_network_preflight_safe"]
+
+    assert not validator([], [], [network], [], "vless-agent")
+
+
 @pytest.mark.parametrize(
     "conflict",
     [

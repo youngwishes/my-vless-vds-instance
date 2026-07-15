@@ -115,11 +115,37 @@ def valid_rendered_topology(value: object, expected_volume: object) -> bool:
     )
 
 
+def _canonical_builtin_without_subnets(value: Mapping[str, object]) -> bool:
+    ipam = value.get("IPAM")
+    return (
+        (value.get("Name"), value.get("Driver"))
+        in {("host", "host"), ("none", "null")}
+        and value.get("Scope") == "local"
+        and value.get("EnableIPv4") is True
+        and value.get("EnableIPv6") is False
+        and isinstance(ipam, Mapping)
+        and dict(ipam)
+        == {"Driver": "default", "Options": None, "Config": None}
+        and value.get("Internal") is False
+        and value.get("Attachable") is False
+        and value.get("Ingress") is False
+        and value.get("ConfigOnly") is False
+        and value.get("Options") == {}
+        and value.get("Labels") == {}
+        and isinstance(value.get("Containers"), Mapping)
+    )
+
+
 def _docker_network_ipv4_subnets(value: Mapping[str, object]) -> list[IPv4Network] | None:
     ipam = value.get("IPAM")
     if not isinstance(ipam, Mapping):
         return None
     configs = ipam.get("Config")
+    if value.get("Name") in {"host", "none"} or value.get("Driver") in {
+        "host",
+        "null",
+    }:
+        return [] if _canonical_builtin_without_subnets(value) else None
     if not isinstance(configs, list):
         return None
     subnets: list[IPv4Network] = []
