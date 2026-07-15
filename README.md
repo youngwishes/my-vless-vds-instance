@@ -90,3 +90,31 @@ The adapter is tested with Xray 26.7.11 against `HandlerService` operations
 `GetInboundUsers` and `AlterInbound` using `AddUserOperation` and
 `RemoveUserOperation`. The Xray gRPC management listener must remain private and
 must never be exposed to the public network.
+
+## Durable snapshot and startup recovery
+
+The central backend remains authoritative. The agent's local snapshot is only
+the last durably accepted exact set and is a startup recovery cache, not proof
+that the node matches the backend's current desired revision. An apply succeeds
+only after Xray accepts the complete validated access set and the complete
+snapshot has been flushed, atomically renamed, and directory-synced.
+
+The snapshot directory is created with mode `0700`; the snapshot and its unique
+same-directory temporary file use exact mode `0600`. The JSON contains only the
+schema version, revision, hash, and managed accesses (including their inherent
+UUIDs). It must be stored on a private persistent volume and must not be logged,
+published, or edited by hand.
+
+On startup, a missing snapshot is a clean first boot and the agent stays not
+ready. A valid durable snapshot is validated and reapplied to Xray, after which
+the agent is only `recovery-ready`; central health and reconcile must still
+confirm the current desired snapshot before the node can serve subscriptions.
+Torn JSON, an invalid hash/schema/order, a symlink or non-regular file, or any
+mode other than `0600` blocks recovery and readiness without changing Xray.
+
+If recovery is blocked, keep the node out of service, preserve the suspect file
+for private forensic inspection, and restore or remove it only through the
+operator's approved recovery procedure. Removing it deliberately returns the
+agent to clean-first-boot/not-ready state; trigger a full backend reconcile
+before returning the node to service. Never repair snapshot content or file
+permissions merely to bypass validation.
