@@ -201,13 +201,13 @@ class BearerCredentialRedactionFilter(logging.Filter):
         rebuilt_record = {
             key: value
             for key, value in original_items
-            if isinstance(key, str)
+            if type(key) is str
             and key in _STANDARD_LOG_RECORD_ATTRIBUTES
         }
         custom_items = tuple(
             (key, value)
             for key, value in original_items
-            if not isinstance(key, str)
+            if type(key) is not str
             or key not in _STANDARD_LOG_RECORD_ATTRIBUTES
         )
         for key, value in custom_items:
@@ -224,7 +224,7 @@ class BearerCredentialRedactionFilter(logging.Filter):
         rebuilt_record = {
             key: value
             for key, value in original_items
-            if isinstance(key, str)
+            if type(key) is str
             and key in _STANDARD_LOG_RECORD_ATTRIBUTES
         }
         rebuilt_record["msg"] = REDACTED

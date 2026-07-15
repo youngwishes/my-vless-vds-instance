@@ -64,6 +64,19 @@ class _StatefulHashSecretKey:
         return f"Authorization: Bearer {TOKEN}"
 
 
+class _StatefulHashStringKey(str):
+    def __new__(cls) -> _StatefulHashStringKey:
+        value = super().__new__(cls, f"Authorization: Bearer {TOKEN}")
+        value.hash_calls = 0
+        return value
+
+    def __hash__(self) -> int:
+        self.hash_calls += 1
+        if self.hash_calls <= 4:
+            return str.__hash__(self)
+        raise RuntimeError("string key hash is no longer available")
+
+
 def test_redaction_filter_removes_bearer_and_authorization_values() -> None:
     record = logging.LogRecord(
         name="agent.test",
@@ -481,6 +494,29 @@ def test_installed_redaction_atomically_rebuilds_stateful_hash_extra_keys() -> N
     logger = logging.getLogger("agent.stateful-hash-key")
     logger.addHandler(handler)
     key = _StatefulHashSecretKey()
+    try:
+        logger.warning("request rejected", extra={key: "visible"})
+    finally:
+        logger.removeHandler(handler)
+
+    assert handler.records
+    assert "visible" in handler.records[0].__dict__.values()
+    for stored_key in handler.records[0].__dict__:
+        assert TOKEN not in str(stored_key)
+
+
+def test_installed_redaction_treats_hostile_str_subclass_key_as_custom() -> None:
+    create_app(
+        settings=Settings(
+            vless_node_id="node-01",
+            environment_mode=EnvironmentMode.TEST,
+            agent_token_current="explicit-test-token",
+        )
+    )
+    handler = _CollectingHandler()
+    logger = logging.getLogger("agent.stateful-string-key")
+    logger.addHandler(handler)
+    key = _StatefulHashStringKey()
     try:
         logger.warning("request rejected", extra={key: "visible"})
     finally:
