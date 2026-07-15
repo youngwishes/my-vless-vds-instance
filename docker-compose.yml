@@ -100,9 +100,9 @@ services:
       timeout: 4s
       retries: 6
       start_period: 5s
-    networks: [management]
-    ports:
-      - "127.0.0.1:${VLESS_AGENT_PORT:-8000}:8000"
+    networks:
+      management:
+        ipv4_address: 172.31.255.3
     read_only: true
     restart: unless-stopped
     logging:
@@ -121,6 +121,7 @@ networks:
     ipam:
       config:
         - subnet: 172.31.255.0/28
+          gateway: 172.31.255.1
   public:
 
 volumes:

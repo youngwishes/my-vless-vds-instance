@@ -121,12 +121,32 @@ def test_compose_orders_init_xray_agent_and_isolates_management_api() -> None:
     assert services["agent"]["depends_on"]["xray"]["condition"] == "service_healthy"
     assert services["xray"]["healthcheck"]["test"][0] == "CMD"
     assert services["agent"]["healthcheck"]["test"][0] == "CMD"
-    assert services["agent"]["ports"] == ["127.0.0.1:${VLESS_AGENT_PORT:-8000}:8000"]
+    assert "ports" not in services["agent"]
     assert services["xray"]["ports"] == ["${VLESS_PUBLIC_PORT:-443}:${VLESS_PUBLIC_PORT:-443}/tcp"]
+    assert {
+        service_name
+        for service_name, service in services.items()
+        if "ports" in service
+    } == {"xray"}
     assert "10085" not in json.dumps(services["xray"].get("ports", []))
-    assert compose["networks"]["management"]["internal"] is True
-    assert services["agent"]["networks"] == ["management"]
+    assert compose["networks"]["management"] == {
+        "internal": True,
+        "ipam": {
+            "config": [
+                {
+                    "subnet": "172.31.255.0/28",
+                    "gateway": "172.31.255.1",
+                }
+            ]
+        },
+    }
+    assert services["agent"]["networks"] == {
+        "management": {"ipv4_address": "172.31.255.3"}
+    }
     assert set(services["xray"]["networks"]) == {"management", "public"}
+    assert services["xray"]["networks"]["management"] == {
+        "ipv4_address": "172.31.255.2"
+    }
     assert "3x-ui" not in json.dumps(compose).lower()
 
 
