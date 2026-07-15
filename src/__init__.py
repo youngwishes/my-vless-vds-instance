@@ -9,4 +9,3 @@ __all__ = (
     "create_app",
     "create_app_from_env",
 )
-

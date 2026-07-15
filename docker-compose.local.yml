@@ -18,4 +18,3 @@ services:
       - "127.0.0.1:${VLESS_AGENT_PORT:-8000}:8000"
     volumes:
       - ./src:/app/src:ro
-

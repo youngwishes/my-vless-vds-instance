@@ -28,4 +28,3 @@ class Settings(BaseSettings):
 
 
 __all__ = ("EnvironmentMode", "Settings")
-

@@ -11,4 +11,3 @@ test:
 
 compose-config:
 	docker compose -f docker-compose.yml config --quiet
-

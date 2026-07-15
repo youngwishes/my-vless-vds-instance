@@ -25,4 +25,3 @@ USER agent
 EXPOSE 8000
 
 CMD ["uvicorn", "src.app:create_app_from_env", "--factory", "--host", "0.0.0.0", "--port", "8000"]
-
