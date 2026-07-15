@@ -76,6 +76,11 @@ def test_startup_restore_is_offloaded_from_async_event_loop() -> None:
     assert called_from[0] != event_loop_thread
 
 
+def test_production_image_contains_canonical_openapi_runtime_artifact() -> None:
+    dockerfile = (Path(__file__).parents[2] / "Dockerfile").read_text(encoding="utf-8")
+    assert "COPY docs/contracts/v1 ./docs/contracts/v1" in dockerfile
+
+
 def test_environment_app_factory_requires_node_identity(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
@@ -97,4 +102,38 @@ def test_environment_app_factory_rejects_whitespace_node_identity(
     monkeypatch.setenv("ENVIRONMENT_MODE", "production")
 
     with pytest.raises(ValidationError, match="vless_node_id"):
+        create_app_from_env()
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    (
+        ("AGENT_SHA", "0" * 40),
+        ("XRAY_VERSION", "unknown"),
+        ("XRAY_VERSION", "   "),
+        ("XRAY_IMAGE_DIGEST", "sha256:" + "0" * 64),
+        ("XRAY_API_TARGET", "   "),
+        ("XRAY_MANAGED_INBOUND_TAG", "   "),
+        ("XRAY_API_TIMEOUT_SECONDS", "0"),
+    ),
+)
+def test_production_environment_factory_rejects_false_or_unsafe_runtime_evidence(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    field: str,
+    value: str,
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("VLESS_NODE_ID", "node-01")
+    monkeypatch.setenv("ENVIRONMENT_MODE", "production")
+    monkeypatch.setenv("AGENT_TOKEN_CURRENT", "x" * 32)
+    monkeypatch.setenv("AGENT_SHA", "a" * 40)
+    monkeypatch.setenv("XRAY_VERSION", "25.7.1")
+    monkeypatch.setenv("XRAY_IMAGE_DIGEST", "sha256:" + "b" * 64)
+    monkeypatch.setenv("XRAY_API_TARGET", "127.0.0.1:10085")
+    monkeypatch.setenv("XRAY_MANAGED_INBOUND_TAG", "vless-managed")
+    monkeypatch.setenv("XRAY_API_TIMEOUT_SECONDS", "5")
+    monkeypatch.setenv(field, value)
+
+    with pytest.raises(ValidationError):
         create_app_from_env()

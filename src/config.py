@@ -5,7 +5,7 @@ from enum import StrEnum
 from pathlib import Path
 from typing import Annotated
 
-from pydantic import SecretStr, StringConstraints, field_validator, model_validator
+from pydantic import Field, SecretStr, StringConstraints, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -37,7 +37,7 @@ class Settings(BaseSettings):
     xray_version: str = "unknown"
     xray_image_digest: str = "sha256:" + "0" * 64
     xray_api_target: str = "127.0.0.1:10085"
-    xray_api_timeout_seconds: float = 5.0
+    xray_api_timeout_seconds: float = Field(default=5.0, gt=0)
     xray_managed_inbound_tag: str = "vless-managed"
     snapshot_path: Path = Path("/var/lib/vless-agent/snapshot.json")
 
@@ -54,6 +54,14 @@ class Settings(BaseSettings):
         if _IMAGE_DIGEST_PATTERN.fullmatch(value) is None:
             raise ValueError("xray_image_digest must be an immutable sha256 digest")
         return value
+
+    @field_validator("xray_api_target", "xray_managed_inbound_tag")
+    @classmethod
+    def _reject_blank_runtime_endpoint(cls, value: str) -> str:
+        stripped = value.strip()
+        if not stripped:
+            raise ValueError("runtime endpoint value must not be blank")
+        return stripped
 
     @field_validator("agent_token_current", "agent_token_next")
     @classmethod
@@ -83,6 +91,12 @@ class Settings(BaseSettings):
                     "agent_token_next must contain at least "
                     f"{MINIMUM_PRODUCTION_TOKEN_LENGTH} characters in production"
                 )
+        if self.agent_sha == "0" * 40:
+            raise ValueError("agent_sha must identify the deployed commit")
+        if not self.xray_version.strip() or self.xray_version.strip().lower() == "unknown":
+            raise ValueError("xray_version must identify the deployed Xray build")
+        if self.xray_image_digest == "sha256:" + "0" * 64:
+            raise ValueError("xray_image_digest must identify the deployed image")
         return self
 
 

@@ -52,15 +52,26 @@ def get_snapshot(request: Request) -> AppliedSnapshotDTO:
     },
 )
 async def put_snapshot(request: Request) -> ApplyResultDTO | Response:
+    content_type, separator, parameters = request.headers.get("content-type", "").partition(";")
+    if content_type.strip().lower() != "application/json" or (
+        separator
+        and any(
+            not parameter.strip().lower().startswith("charset=")
+            or not parameter.partition("=")[2].strip()
+            for parameter in parameters.split(";")
+        )
+    ):
+        return Response(status_code=415)
     body = bytearray()
     async for chunk in request.stream():
-        body.extend(chunk)
-        if len(body) > _MAX_RAW_REQUEST_BYTES:
+        remaining = _MAX_RAW_REQUEST_BYTES - len(body)
+        if len(chunk) > remaining:
             return _error(
                 status_code=413,
                 code="snapshot_too_large",
                 message="Snapshot exceeds the supported contract limits.",
             )
+        body.extend(chunk)
     try:
         snapshot = SnapshotDTO.model_validate_json(body)
         result = await run_in_threadpool(

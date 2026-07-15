@@ -4,9 +4,11 @@ import hashlib
 import asyncio
 import json
 from dataclasses import dataclass
+from pathlib import Path
 from unittest.mock import Mock
 
 import pytest
+import yaml
 from src.api.schemas import SnapshotDTO
 from src.app import create_app
 from src.config import EnvironmentMode, Settings
@@ -46,12 +48,17 @@ class _Client:
         headers: dict[str, str],
         json: object | None = None,
         content: bytes | None = None,
+        chunks: list[bytes] | None = None,
     ) -> _Response:
         body = content if content is not None else __import__("json").dumps(json).encode()
-        return self.request("PUT", path, headers=headers, body=body)
+        request_headers = dict(headers)
+        if json is not None:
+            request_headers.setdefault("Content-Type", "application/json")
+        return self.request("PUT", path, headers=request_headers, body=body, chunks=chunks)
 
     def request(
-        self, method: str, path: str, *, headers: dict[str, str], body: bytes = b""
+        self, method: str, path: str, *, headers: dict[str, str], body: bytes = b"",
+        chunks: list[bytes] | None = None,
     ) -> _Response:
         messages: list[dict[str, object]] = []
         scope = {
@@ -61,13 +68,12 @@ class _Client:
             "headers": [(key.lower().encode(), value.encode()) for key, value in headers.items()],
             "client": ("127.0.0.1", 1), "server": ("agent.test", 443), "root_path": "",
         }
-        delivered = False
+        pending = list(chunks) if chunks is not None else [body]
 
         async def receive() -> dict[str, object]:
-            nonlocal delivered
-            if not delivered:
-                delivered = True
-                return {"type": "http.request", "body": body, "more_body": False}
+            if pending:
+                chunk = pending.pop(0)
+                return {"type": "http.request", "body": chunk, "more_body": bool(pending)}
             return {"type": "http.disconnect"}
 
         async def send(message: dict[str, object]) -> None:
@@ -212,6 +218,78 @@ def test_raw_body_overflow_is_413_before_apply() -> None:
     apply.assert_not_called()
 
 
+@pytest.mark.parametrize("prefix", ([], [b"{}"]), ids=("one-huge-chunk", "multi-chunk"))
+def test_body_ingestion_never_copies_more_than_limit_plus_one_from_huge_chunks(
+    monkeypatch: pytest.MonkeyPatch,
+    prefix: list[bytes],
+) -> None:
+    import src.api.routes.snapshot as route_module
+
+    extended_sizes: list[int] = []
+    class SpyBytearray(bytearray):
+        def extend(self, value) -> None:
+            extended_sizes.append(len(value))
+            super().extend(value)
+
+    monkeypatch.setattr(route_module, "bytearray", SpyBytearray, raising=False)
+    client, _ = _client()
+    huge = b"x" * (1_048_576 + 10_000)
+
+    response = client.put(
+        "/api/v1/snapshot",
+        headers={**AUTH, "Content-Type": "application/json; charset=UTF-8"},
+        chunks=[*prefix, huge],
+    )
+
+    assert response.status_code == 413
+    assert sum(extended_sizes) <= 1_048_704 + 1
+    assert max(extended_sizes, default=0) <= 1_048_704 + 1
+
+
+@pytest.mark.parametrize("content_type", (None, "text/plain", "application/problem+json"))
+def test_put_rejects_missing_or_unsupported_content_type_without_detail(
+    content_type: str | None,
+) -> None:
+    client, _ = _client()
+    headers = dict(AUTH)
+    if content_type is not None:
+        headers["Content-Type"] = content_type
+
+    response = client.put("/api/v1/snapshot", headers=headers, content=b"{}")
+
+    assert response.status_code == 415
+    assert response.body == b""
+    assert "415" not in client.app.openapi()["paths"]["/api/v1/snapshot"]["put"]["responses"]
+
+
+def test_authentication_runs_before_content_type_rejection() -> None:
+    client, _ = _client()
+    response = client.put(
+        "/api/v1/snapshot",
+        headers={"X-Agent-Contract-Version": "v1"},
+        content=b"{}",
+    )
+    assert response.status_code == 401
+
+    incompatible = client.put(
+        "/api/v1/snapshot",
+        headers={"Authorization": f"Bearer {TOKEN}"},
+        content=b"{}",
+    )
+    assert incompatible.status_code == 426
+
+
+def test_put_accepts_case_insensitive_json_content_type_with_charset() -> None:
+    client, _ = _client()
+    snapshot = _snapshot()
+    response = client.put(
+        "/api/v1/snapshot",
+        headers={**AUTH, "Content-Type": "Application/JSON; Charset=UTF-8"},
+        content=json.dumps(snapshot.model_dump(mode="json")).encode(),
+    )
+    assert response.status_code == 200
+
+
 def test_operational_failure_is_generic_unadvertised_500_and_demotes() -> None:
     secret = "01890f47-a2d4-7c11-b3e6-89f40d8639f1 /private/path Bearer token"
     client, state = _client(apply=Mock(side_effect=RuntimeError(secret)))
@@ -253,3 +331,17 @@ def test_generated_openapi_has_exact_contract_surface_and_status_matrix() -> Non
     assert set(schema["components"]["schemas"]) == {
         "Hash", "Health", "AppliedSnapshot", "ApplyResult", "SafeError"
     }
+
+
+def test_generated_openapi_is_a_deep_copy_of_reviewed_canonical_c001() -> None:
+    client, _ = _client()
+    canonical_path = (
+        Path(__file__).resolve().parents[2]
+        / "docs/contracts/v1/agent-v1.openapi.yaml"
+    )
+    canonical = yaml.safe_load(canonical_path.read_text(encoding="utf-8"))
+
+    first = client.app.openapi()
+    assert first == canonical
+    first["info"]["description"] = "mutated caller copy"
+    assert client.app.openapi() == canonical

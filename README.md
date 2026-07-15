@@ -1,7 +1,8 @@
 # VLESS VDS instance agent
 
 FastAPI agent for a VLESS node managed by the central subscription backend.
-This initial scaffold intentionally exposes no HTTP endpoints.
+Its management API is authenticated and exposes only the reviewed contract-v1
+health and exact-snapshot operations.
 
 ## Requirements
 
@@ -17,7 +18,7 @@ Install exactly the dependencies recorded in the lockfile:
 uv sync --frozen
 ```
 
-Set the required public node identity and start the application factory:
+Set the required node identity and start the application factory:
 
 ```bash
 export VLESS_NODE_ID=local-node
@@ -55,21 +56,26 @@ Start the local container with a source bind mount and reload enabled:
 docker compose -f docker-compose.local.yml up --build
 ```
 
-Production Compose does not mount source code and requires the node identity
-and bearer token:
+Production Compose does not mount source code and requires the node identity,
+bearer token, exact agent commit SHA, Xray version, and immutable image digest:
 
 ```bash
-VLESS_NODE_ID=example-node AGENT_TOKEN_CURRENT=secure-token-from-secret-store-at-least-32-chars docker compose -f docker-compose.yml up --build -d
+VLESS_NODE_ID=example-node \
+AGENT_TOKEN_CURRENT=secure-token-from-secret-store-at-least-32-chars \
+AGENT_SHA=0123456789abcdef0123456789abcdef01234567 \
+XRAY_VERSION=26.7.11 \
+XRAY_IMAGE_DIGEST=sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef \
+docker compose -f docker-compose.yml up --build -d
 ```
 
 The image runs the agent as a non-root user. No secrets or environment files
-are copied into it. A public health route will be added only with the reviewed
-agent API contract.
+are copied into it. All management routes require bearer authentication and
+the contract-version header; none is a public unauthenticated health route.
 
 ## Layout
 
 ```text
-src/app.py          empty FastAPI application factory
+src/app.py          authenticated contract-v1 FastAPI application factory
 src/config.py       typed environment settings
 tests/unit/         focused unit tests
 Dockerfile          non-root production image
