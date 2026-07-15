@@ -69,5 +69,8 @@ jobs:
           deploy/playbook-prod.yml --syntax-check
           -e deploy_revision="${{ steps.candidate.outputs.sha }}"
 
+      - name: Run deployment safety tests
+        run: uv run pytest deploy/tests -q
+
       - name: Run complete test suite
         run: uv run pytest -q

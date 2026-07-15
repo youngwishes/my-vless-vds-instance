@@ -33,10 +33,15 @@ def test_ci_uses_only_exact_official_action_pins_and_read_permission() -> None:
 def test_ci_runs_complete_non_deploy_verification() -> None:
     text, workflow = _workflow()
     steps = workflow["jobs"]["verify"]["steps"]
+    by_name = {step["name"]: step for step in steps}
     commands = [step["run"] for step in steps if "run" in step]
 
     assert "uv sync --locked --all-groups" in commands
     assert "uv run pytest -q" in commands
+    assert by_name["Run deployment safety tests"] == {
+        "name": "Run deployment safety tests",
+        "run": "uv run pytest deploy/tests -q",
+    }
     assert "docker compose -f docker-compose.yml config --quiet" in commands
     assert "docker compose -f docker-compose.local.yml config --quiet" in commands
     assert any("deploy/playbook-test.yml --syntax-check" in command for command in commands)

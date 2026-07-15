@@ -597,6 +597,36 @@ def test_nginx_listener_parser_ignores_comments_and_rejects_extra_listeners() ->
     assert parser(inline) == ["80", "0.0.0.0:8443 ssl"]
 
 
+@pytest.mark.parametrize(
+    ("configuration", "expected"),
+    [
+        (
+            "server {\n    listen 0.0.0.0:8443 ssl;\n}",
+            ["0.0.0.0:8443 ssl"],
+        ),
+        ("server { listen 0.0.0.0:8443 ssl; }", ["0.0.0.0:8443 ssl"]),
+        ("server {\tlisten\t0.0.0.0:8443\tssl; }", ["0.0.0.0:8443 ssl"]),
+        (
+            "server {\n    listen\n        0.0.0.0:8443\n        ssl;\n}",
+            ["0.0.0.0:8443 ssl"],
+        ),
+        (
+            "server {\n"
+            "    listen 0.0.0.0:8443 ssl;\n"
+            "    listen 0.0.0.0:8443 ssl;\n"
+            "}",
+            ["0.0.0.0:8443 ssl", "0.0.0.0:8443 ssl"],
+        ),
+    ],
+)
+def test_nginx_listener_parser_returns_each_source_directive_once(
+    configuration: str, expected: list[str]
+) -> None:
+    parser = _load_role_filters()["vless_agent_nginx_listeners"]
+
+    assert parser(configuration) == expected
+
+
 def test_previous_compose_state_requires_running_agent_and_xray() -> None:
     validator = _load_role_filters()["vless_agent_compose_runtime_was_running"]
 
@@ -813,6 +843,7 @@ def test_no_compatible_rollback_cleanup_is_flagged_fail_closed_and_volume_safe()
 def test_documentation_covers_safe_rollout_recovery_rotation_and_approval() -> None:
     deploy_doc = _read(ROOT / "docs" / "DEPLOY.md").lower()
     compatibility = _read(ROOT / "docs" / "COMPATIBILITY.md")
+    normalized_compatibility = " ".join(compatibility.lower().split())
 
     for phrase in (
         "test first",
@@ -835,8 +866,13 @@ def test_documentation_covers_safe_rollout_recovery_rotation_and_approval() -> N
     assert XRAY_DIGEST in compatibility
     assert REVIEWED_AGENT_SHA in compatibility
     assert "upgrade" in compatibility.lower() and "downgrade" in compatibility.lower()
-    assert "a-007 runtime baseline" in compatibility.lower()
-    assert "final a-008" in compatibility.lower()
+    assert "a-007 runtime baseline" in normalized_compatibility
+    assert "not a later infrastructure or ci revision" in normalized_compatibility
+    assert (
+        "intentionally does not claim a-010 has been test-deployed"
+        in normalized_compatibility
+    )
+    assert "does not yet add its candidate sha" in normalized_compatibility
 
 
 def test_deploy_docs_describe_contract_accurate_identity_anchor() -> None:

@@ -100,7 +100,7 @@ def nginx_listeners(value: object) -> list[str]:
             sanitized.append(character)
     listeners: list[str] = []
     pattern = re.compile(
-        r"(?m)(?=(?:^[ \t]*listen\s+([^;{}]+);|[;{}]\s*listen\s+([^;{}]+);))"
+        r"(?m)(?=(?:^[ \t]*listen\s+([^;{}]+);|[;{}][ \t]*listen\s+([^;{}]+);))"
     )
     for match in pattern.finditer("".join(sanitized)):
         directive = match.group(1) if match.group(1) is not None else match.group(2)
