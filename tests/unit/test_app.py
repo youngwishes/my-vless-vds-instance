@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
 from pydantic import ValidationError
 
@@ -31,8 +33,22 @@ def test_settings_load_typed_values_from_environment(monkeypatch: pytest.MonkeyP
 
 def test_environment_app_factory_requires_node_identity(
     monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
 ) -> None:
+    monkeypatch.chdir(tmp_path)
     monkeypatch.delenv("VLESS_NODE_ID", raising=False)
+    monkeypatch.setenv("ENVIRONMENT_MODE", "production")
+
+    with pytest.raises(ValidationError, match="vless_node_id"):
+        create_app_from_env()
+
+
+def test_environment_app_factory_rejects_whitespace_node_identity(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("VLESS_NODE_ID", "   ")
     monkeypatch.setenv("ENVIRONMENT_MODE", "production")
 
     with pytest.raises(ValidationError, match="vless_node_id"):
