@@ -50,6 +50,20 @@ class _BrokenKey:
         raise RuntimeError("cannot represent key")
 
 
+class _StatefulHashSecretKey:
+    def __init__(self) -> None:
+        self.hash_calls = 0
+
+    def __hash__(self) -> int:
+        self.hash_calls += 1
+        if self.hash_calls <= 4:
+            return 42
+        raise RuntimeError("hash is no longer available")
+
+    def __str__(self) -> str:
+        return f"Authorization: Bearer {TOKEN}"
+
+
 def test_redaction_filter_removes_bearer_and_authorization_values() -> None:
     record = logging.LogRecord(
         name="agent.test",
@@ -86,6 +100,35 @@ def test_create_app_installs_redaction_for_captured_logs(caplog) -> None:
 
     assert TOKEN not in caplog.text
     assert "Authorization: [REDACTED]" in caplog.text
+
+
+def test_flat_authorization_redaction_consumes_delimiter_suffix() -> None:
+    create_app(
+        settings=Settings(
+            vless_node_id="node-01",
+            environment_mode=EnvironmentMode.TEST,
+            agent_token_current="explicit-test-token",
+        )
+    )
+    output = StringIO()
+    handler = logging.StreamHandler(output)
+    logger = logging.getLogger("agent.delimited-authorization")
+    previous_level = logger.level
+    previous_propagate = logger.propagate
+    logger.setLevel(logging.INFO)
+    logger.propagate = False
+    logger.addHandler(handler)
+    try:
+        logger.info(
+            "Authorization: Bearer %s,sensitive-suffix;still-sensitive",
+            TOKEN,
+        )
+    finally:
+        logger.removeHandler(handler)
+        logger.setLevel(previous_level)
+        logger.propagate = previous_propagate
+
+    assert output.getvalue() == "Authorization: [REDACTED]\n"
 
 
 def test_installed_filter_redacts_post_extra_authorization_and_nested_headers(
@@ -424,6 +467,29 @@ def test_installed_redaction_sanitizes_top_level_custom_keys_without_collision()
             assert TOKEN not in key
         else:
             raise AssertionError("custom logging key was not normalized safely")
+
+
+def test_installed_redaction_atomically_rebuilds_stateful_hash_extra_keys() -> None:
+    create_app(
+        settings=Settings(
+            vless_node_id="node-01",
+            environment_mode=EnvironmentMode.TEST,
+            agent_token_current="explicit-test-token",
+        )
+    )
+    handler = _CollectingHandler()
+    logger = logging.getLogger("agent.stateful-hash-key")
+    logger.addHandler(handler)
+    key = _StatefulHashSecretKey()
+    try:
+        logger.warning("request rejected", extra={key: "visible"})
+    finally:
+        logger.removeHandler(handler)
+
+    assert handler.records
+    assert "visible" in handler.records[0].__dict__.values()
+    for stored_key in handler.records[0].__dict__:
+        assert TOKEN not in str(stored_key)
 
 
 def test_redaction_filter_scrubs_structured_authorization_field() -> None:

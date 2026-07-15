@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from enum import StrEnum
 from typing import Annotated
 
@@ -15,6 +16,7 @@ class EnvironmentMode(StrEnum):
 
 NodeId = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1)]
 MINIMUM_PRODUCTION_TOKEN_LENGTH = 32
+_BEARER_TOKEN_PATTERN = re.compile(r"[A-Za-z0-9\-._~+/]+={0,}")
 
 
 class Settings(BaseSettings):
@@ -34,6 +36,10 @@ class Settings(BaseSettings):
     def _reject_blank_token(cls, value: SecretStr | None) -> SecretStr | None:
         if value is not None and not value.get_secret_value().strip():
             raise ValueError("token must not be blank")
+        if value is not None and _BEARER_TOKEN_PATTERN.fullmatch(
+            value.get_secret_value()
+        ) is None:
+            raise ValueError("token must use the RFC 6750 b64token alphabet")
         return value
 
     @model_validator(mode="after")

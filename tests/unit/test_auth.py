@@ -200,6 +200,28 @@ def test_all_modes_reject_blank_secret_str_tokens(
         Settings(**values)
 
 
+@pytest.mark.parametrize("mode", tuple(EnvironmentMode))
+@pytest.mark.parametrize("field", ("agent_token_current", "agent_token_next"))
+@pytest.mark.parametrize(
+    "invalid_token",
+    ("token,tail", "token;tail", "token tail", "token=interior"),
+)
+def test_all_modes_reject_tokens_outside_rfc6750_b64token_alphabet(
+    mode: EnvironmentMode,
+    field: str,
+    invalid_token: str,
+) -> None:
+    values = {
+        "vless_node_id": "node-01",
+        "environment_mode": mode,
+        "agent_token_current": SecretStr("x" * 32),
+        field: SecretStr(invalid_token),
+    }
+
+    with pytest.raises(ValidationError, match=field):
+        Settings(**values)
+
+
 @pytest.mark.parametrize("compose_name", ("docker-compose.yml", "docker-compose.local.yml"))
 def test_compose_requires_current_token_and_passes_next_only_when_set(
     compose_name: str,

@@ -13,9 +13,9 @@ _QUOTED_AUTHORIZATION = re.compile(
     r"(?i)([\"']?authorization[\"']?\s*[:=]\s*)([\"'])(.*?)(\2)"
 )
 _UNQUOTED_AUTHORIZATION = re.compile(
-    r"(?i)(\bauthorization\b\s*[:=]\s*)[^\r\n,;}]+"
+    r"(?i)(\bauthorization\b\s*[:=]\s*)[^\r\n]+"
 )
-_BEARER_CREDENTIAL = re.compile(r"(?i)\bbearer\s+[^\s,;}\]\[\"']+")
+_BEARER_CREDENTIAL = re.compile(r"(?i)\bbearer\s+[^\r\n]+")
 _STANDARD_LOG_RECORD_ATTRIBUTES = frozenset(
     logging.LogRecord("", 0, "", 0, "", (), None).__dict__
 )
@@ -197,37 +197,45 @@ class BearerCredentialRedactionFilter(logging.Filter):
         if record.stack_info is not None:
             record.stack_info = redact_log_text(record.stack_info)
 
+        original_items = tuple(record.__dict__.items())
+        rebuilt_record = {
+            key: value
+            for key, value in original_items
+            if isinstance(key, str)
+            and key in _STANDARD_LOG_RECORD_ATTRIBUTES
+        }
         custom_items = tuple(
             (key, value)
-            for key, value in record.__dict__.items()
+            for key, value in original_items
             if not isinstance(key, str)
             or key not in _STANDARD_LOG_RECORD_ATTRIBUTES
         )
-        for key, _ in custom_items:
-            del record.__dict__[key]
         for key, value in custom_items:
             _store_without_collision(
-                record.__dict__,
+                rebuilt_record,
                 key=key,
                 value=_redact_log_value(value, key=key),
             )
+        record.__dict__.clear()
+        record.__dict__.update(rebuilt_record)
 
     def _apply_safe_fallback(self, record: logging.LogRecord) -> None:
-        record.msg = REDACTED
-        record.args = ()
-        record.exc_info = None
-        record.exc_text = REDACTED
-        record.stack_info = None
-        custom_keys = tuple(
-            key
-            for key in record.__dict__
-            if not isinstance(key, str)
-            or key not in _STANDARD_LOG_RECORD_ATTRIBUTES
-        )
-        for key in custom_keys:
-            del record.__dict__[key]
-        if custom_keys:
-            record.__dict__["redaction_failure"] = REDACTED
+        original_items = tuple(record.__dict__.items())
+        rebuilt_record = {
+            key: value
+            for key, value in original_items
+            if isinstance(key, str)
+            and key in _STANDARD_LOG_RECORD_ATTRIBUTES
+        }
+        rebuilt_record["msg"] = REDACTED
+        rebuilt_record["args"] = ()
+        rebuilt_record["exc_info"] = None
+        rebuilt_record["exc_text"] = REDACTED
+        rebuilt_record["stack_info"] = None
+        if len(rebuilt_record) != len(original_items):
+            rebuilt_record["redaction_failure"] = REDACTED
+        record.__dict__.clear()
+        record.__dict__.update(rebuilt_record)
 
 
 def install_logging_redaction() -> None:
