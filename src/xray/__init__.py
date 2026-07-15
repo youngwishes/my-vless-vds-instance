@@ -10,6 +10,13 @@ from src.xray.exceptions import (
     XrayTimeoutError,
     XrayUnavailableError,
 )
+from src.xray.config_renderer import (
+    PINNED_XRAY_DIGEST,
+    PINNED_XRAY_IMAGE,
+    PINNED_XRAY_VERSION,
+    RuntimeConfigError,
+    render_xray_config,
+)
 
 __all__ = (
     "ApplyExactSetService",
@@ -24,4 +31,9 @@ __all__ = (
     "VLESS_VISION_FLOW",
     "access_email",
     "create_apply_exact_set_service",
+    "PINNED_XRAY_DIGEST",
+    "PINNED_XRAY_IMAGE",
+    "PINNED_XRAY_VERSION",
+    "RuntimeConfigError",
+    "render_xray_config",
 )

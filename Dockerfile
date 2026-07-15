@@ -17,9 +17,14 @@ COPY pyproject.toml uv.lock README.md ./
 RUN uv sync --frozen --no-dev --no-install-project
 
 COPY src ./src
+COPY entrypoint.sh ./entrypoint.sh
+COPY xray ./xray
 COPY docs/contracts/v1 ./docs/contracts/v1
 RUN uv sync --frozen --no-dev \
-    && chown -R agent:agent /app
+    && chmod 0555 /app/entrypoint.sh \
+    && chown -R agent:agent /app \
+    && mkdir /generated \
+    && chown 65532:65532 /generated
 
 USER agent
 

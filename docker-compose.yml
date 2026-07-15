@@ -1,31 +1,112 @@
 services:
+  xray-volume-init:
+    build:
+      context: .
+    user: "0:0"
+    command: ["chown", "65532:65532", "/generated"]
+    cap_drop: [ALL]
+    cap_add: [CHOWN]
+    read_only: true
+    restart: "no"
+    security_opt: [no-new-privileges:true]
+    volumes:
+      - xray-config:/generated
+
+  xray-config:
+    build:
+      context: .
+    user: "65532:65532"
+    command: ["/app/entrypoint.sh"]
+    cap_drop: [ALL]
+    depends_on:
+      xray-volume-init:
+        condition: service_completed_successfully
+    environment:
+      REALITY_PRIVATE_KEY_FILE: /run/secrets/reality_private_key
+      REALITY_TARGET: ${REALITY_TARGET:-}
+      REALITY_SERVER_NAME: ${REALITY_SERVER_NAME:-}
+      REALITY_SHORT_IDS: ${REALITY_SHORT_IDS:-}
+      VLESS_PUBLIC_PORT: ${VLESS_PUBLIC_PORT:-443}
+      XRAY_CONFIG_TEMPLATE: /app/xray/config.template.json
+      XRAY_CONFIG_OUTPUT: /generated/config.json
+    read_only: true
+    restart: "no"
+    security_opt: [no-new-privileges:true]
+    secrets:
+      - source: reality_private_key
+        target: reality_private_key
+    tmpfs: [/tmp]
+    volumes:
+      - xray-config:/generated
+
+  xray:
+    image: ghcr.io/xtls/xray-core@sha256:a1644183accdb0b5be967093fe34be756fd5de15fe2ee0206e842ae17350967f
+    user: "65532:65532"
+    cap_drop: [ALL]
+    depends_on:
+      xray-config:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD", "/usr/local/bin/xray", "api", "lsi", "--server=127.0.0.1:10085", "--timeout=3", "--isOnlyTags=true"]
+      interval: 5s
+      timeout: 4s
+      retries: 12
+      start_period: 3s
+    networks: [management, public]
+    ports:
+      - "${VLESS_PUBLIC_PORT:-443}:${VLESS_PUBLIC_PORT:-443}/tcp"
+    read_only: true
+    restart: unless-stopped
+    security_opt: [no-new-privileges:true]
+    tmpfs: [/tmp]
+    volumes:
+      - xray-config:/usr/local/etc/xray:ro
+
   agent:
     build:
       context: .
-    cap_drop:
-      - ALL
+    user: agent
+    cap_drop: [ALL]
+    depends_on:
+      xray:
+        condition: service_healthy
     environment:
       AGENT_TOKEN_CURRENT: ${AGENT_TOKEN_CURRENT:?AGENT_TOKEN_CURRENT must be set}
       AGENT_TOKEN_NEXT:
       ENVIRONMENT_MODE: production
       VLESS_NODE_ID: ${VLESS_NODE_ID:-}
       AGENT_SHA: ${AGENT_SHA:?AGENT_SHA must be set}
-      XRAY_VERSION: ${XRAY_VERSION:?XRAY_VERSION must be set}
-      XRAY_IMAGE_DIGEST: ${XRAY_IMAGE_DIGEST:?XRAY_IMAGE_DIGEST must be set}
-      XRAY_API_TARGET: ${XRAY_API_TARGET:-127.0.0.1:10085}
+      XRAY_VERSION: "26.7.11"
+      XRAY_IMAGE_DIGEST: sha256:a1644183accdb0b5be967093fe34be756fd5de15fe2ee0206e842ae17350967f
+      XRAY_API_TARGET: xray:10085
       XRAY_API_TIMEOUT_SECONDS: ${XRAY_API_TIMEOUT_SECONDS:-5}
-      XRAY_MANAGED_INBOUND_TAG: ${XRAY_MANAGED_INBOUND_TAG:-vless-managed}
+      XRAY_MANAGED_INBOUND_TAG: vless-managed
       SNAPSHOT_PATH: /var/lib/vless-agent/snapshot.json
+    healthcheck:
+      test: ["CMD", "/app/.venv/bin/python", "-c", "import os,urllib.request; r=urllib.request.Request('http://127.0.0.1:8000/api/v1/health',headers={'Authorization':'Bearer '+os.environ['AGENT_TOKEN_CURRENT'],'X-Agent-Contract-Version':'v1'}); raise SystemExit(0 if urllib.request.urlopen(r,timeout=3).status == 200 else 1)"]
+      interval: 10s
+      timeout: 4s
+      retries: 6
+      start_period: 5s
+    networks: [management]
     ports:
       - "127.0.0.1:${VLESS_AGENT_PORT:-8000}:8000"
     read_only: true
     restart: unless-stopped
-    security_opt:
-      - no-new-privileges:true
-    tmpfs:
-      - /tmp
+    security_opt: [no-new-privileges:true]
+    tmpfs: [/tmp]
     volumes:
       - agent-snapshot:/var/lib/vless-agent
 
+networks:
+  management:
+    internal: true
+  public:
+
 volumes:
   agent-snapshot:
+  xray-config:
+
+secrets:
+  reality_private_key:
+    file: ${REALITY_PRIVATE_KEY_FILE:?REALITY_PRIVATE_KEY_FILE must point to the runtime secret file}

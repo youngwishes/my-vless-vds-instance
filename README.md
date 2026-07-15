@@ -56,21 +56,48 @@ Start the local container with a source bind mount and reload enabled:
 docker compose -f docker-compose.local.yml up --build
 ```
 
-Production Compose does not mount source code and requires the node identity,
-bearer token, exact agent commit SHA, Xray version, and immutable image digest:
+Production Compose starts a one-shot validated config renderer, the official
+distroless Xray image, and then the agent. It requires the node identity,
+bearer token, exact agent commit SHA, and runtime-only REALITY inputs:
 
 ```bash
 VLESS_NODE_ID=example-node \
 AGENT_TOKEN_CURRENT=secure-token-from-secret-store-at-least-32-chars \
 AGENT_SHA=0123456789abcdef0123456789abcdef01234567 \
-XRAY_VERSION=26.7.11 \
-XRAY_IMAGE_DIGEST=sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef \
+REALITY_PRIVATE_KEY_FILE=/secure/runtime/secrets/reality_private_key \
+REALITY_TARGET=origin.example:443 \
+REALITY_SERVER_NAME=www.example.com \
+REALITY_SHORT_IDS=0123456789abcdef \
 docker compose -f docker-compose.yml up --build -d
 ```
 
-The image runs the agent as a non-root user. No secrets or environment files
-are copied into it. All management routes require bearer authentication and
-the contract-version header; none is a public unauthenticated health route.
+Xray is fixed directly in production Compose to official version `26.7.11` at
+digest `sha256:a1644183accdb0b5be967093fe34be756fd5de15fe2ee0206e842ae17350967f`;
+there is no environment override or floating tag. To upgrade, change the exact
+version/digest pair, validate the rendered config against that digest, run the
+full tests and a bounded container smoke test, then review the resulting diff.
+
+The REALITY private key is supplied as a Compose secret file, never as an
+interpolated service environment value. Create it outside the checkout owned
+by runtime uid/gid `65532:65532` with mode `0400` or `0600`; file-backed
+Compose secrets do not portably apply requested ownership. The renderer
+rejects symlinks, non-regular files,
+unexpected ownership, group/other access, and oversized content. The key is
+written only to the private generated-config volume. It is never copied into
+an image, logged, returned by health, or exposed by `docker compose config`.
+The renderer rejects IP-literal targets and any
+DNS answer that is loopback, private, link-local, multicast, unspecified,
+reserved, or a known metadata address. Before writing config it connects to
+each resolved public address with a five-second bound, verified certificates,
+configured SNI, and TLS 1.3 minimum; DNS, certificate, SNI, or protocol failure
+stops startup. DNS resolution itself runs behind the same wall-clock deadline;
+a blocked system resolver is abandoned without delaying startup failure.
+
+Only the VLESS TCP port is public. Xray's HandlerService network is internal,
+the agent API is bound to host loopback, roots are read-only, and runtime
+containers drop all capabilities and run non-root. All management routes
+require bearer authentication and the contract-version header; none is a
+public unauthenticated health route.
 
 ## Layout
 
