@@ -453,6 +453,88 @@ def test_network_preflight_allows_adjacent_cidr_and_verified_expected_bridge() -
 
 
 @pytest.mark.parametrize(
+    ("options", "ipam_extra"),
+    [
+        ({}, {}),
+        ({"com.docker.network.enable_ipv4": "true"}, {"IPRange": ""}),
+        ({"com.docker.network.enable_ipv6": "false"}, {}),
+        (
+            {
+                "com.docker.network.enable_ipv4": "true",
+                "com.docker.network.enable_ipv6": "false",
+            },
+            {"IPRange": ""},
+        ),
+    ],
+)
+def test_network_preflight_accepts_docker_29_normalized_bridge_inspect(
+    options: dict[str, str], ipam_extra: dict[str, str]
+) -> None:
+    validator = _load_role_filters()["vless_agent_network_preflight_safe"]
+    network = _expected_network()
+    network["Options"] = options
+    network["IPAM"]["Config"][0].update(ipam_extra)
+    addresses = [{"ifname": "br-abcdef012345", "addr_info": [{"family": "inet", "local": "172.31.255.1", "prefixlen": 28}]}]
+    routes = [{"dst": MANAGEMENT_SUBNET, "dev": "br-abcdef012345"}]
+
+    assert validator(addresses, routes, [network], [], "vless-agent")
+
+
+@pytest.mark.parametrize(
+    "options",
+    [
+        {"com.docker.network.bridge.name": "custom"},
+        {"unknown": "value"},
+        {"com.docker.network.enable_ipv4": "false"},
+        {"com.docker.network.enable_ipv4": True},
+        {"com.docker.network.enable_ipv6": "true"},
+        {"com.docker.network.enable_ipv6": False},
+        {
+            "com.docker.network.enable_ipv4": "true",
+            "com.docker.network.enable_ipv6": "false",
+            "unknown": "value",
+        },
+    ],
+)
+def test_network_preflight_rejects_unreviewed_or_mistyped_network_options(
+    options: dict[str, object],
+) -> None:
+    validator = _load_role_filters()["vless_agent_network_preflight_safe"]
+    network = _expected_network()
+    network["Options"] = options
+
+    assert not validator([], [], [network], [], "vless-agent")
+
+
+@pytest.mark.parametrize(
+    "mutate",
+    [
+        lambda config: config.update(IPRange="172.31.255.4/30"),
+        lambda config: config.update(Unknown="value"),
+        lambda config: config.pop("Subnet"),
+        lambda config: config.pop("Gateway"),
+        lambda config: config.update(Subnet="172.31.255.0/29"),
+        lambda config: config.update(Gateway="172.31.255.4"),
+        lambda config: config.update(IPRange=None),
+    ],
+)
+def test_network_preflight_rejects_normalized_ipam_drift(mutate: object) -> None:
+    validator = _load_role_filters()["vless_agent_network_preflight_safe"]
+    network = _expected_network()
+    mutate(network["IPAM"]["Config"][0])
+
+    assert not validator([], [], [network], [], "vless-agent")
+
+
+def test_network_preflight_rejects_missing_options() -> None:
+    validator = _load_role_filters()["vless_agent_network_preflight_safe"]
+    network = _expected_network()
+    network.pop("Options")
+
+    assert not validator([], [], [network], [], "vless-agent")
+
+
+@pytest.mark.parametrize(
     "mutate",
     [
         lambda value: value.update(Name="wrong"),
@@ -697,6 +779,18 @@ def _runtime_inspection(*, agent_ports: object = None) -> tuple[list[dict[str, o
         },
     }
     return [network], [xray], [agent]
+
+
+def test_runtime_topology_accepts_docker_29_normalized_bridge_inspect() -> None:
+    validator = _load_role_filters()["vless_agent_valid_runtime_topology"]
+    network, xray, agent = _runtime_inspection()
+    network[0]["Options"] = {
+        "com.docker.network.enable_ipv4": "true",
+        "com.docker.network.enable_ipv6": "false",
+    }
+    network[0]["IPAM"]["Config"][0]["IPRange"] = ""
+
+    assert validator(network, xray, agent, "vless-agent")
 
 
 @pytest.mark.parametrize("empty_ports", [None, {}, {"8000/tcp": None}])

@@ -147,16 +147,36 @@ def _expected_network_bridge(
     if not isinstance(labels, Mapping) or not isinstance(ipam, Mapping):
         return None
     configs = ipam.get("Config")
+    options = network.get("Options")
+    allowed_options = {
+        "com.docker.network.enable_ipv4": "true",
+        "com.docker.network.enable_ipv6": "false",
+    }
+    if not isinstance(options, Mapping) or any(
+        key not in allowed_options or value != allowed_options[key]
+        for key, value in options.items()
+    ):
+        return None
+    if not isinstance(configs, list) or len(configs) != 1:
+        return None
+    config = configs[0]
+    if (
+        not isinstance(config, Mapping)
+        or set(config) not in (
+            {"Subnet", "Gateway"},
+            {"Subnet", "Gateway", "IPRange"},
+        )
+        or config.get("Subnet") != str(_MANAGEMENT_NETWORK)
+        or config.get("Gateway") != _MANAGEMENT_GATEWAY
+        or ("IPRange" in config and config.get("IPRange") != "")
+    ):
+        return None
     if (
         network.get("Name") != expected_name
         or network.get("Driver") != "bridge"
         or network.get("Internal") is not True
-        or network.get("Options") != {}
         or labels.get("com.docker.compose.project") != expected_project
         or labels.get("com.docker.compose.network") != "management"
-        or not isinstance(configs, list)
-        or configs
-        != [{"Subnet": str(_MANAGEMENT_NETWORK), "Gateway": _MANAGEMENT_GATEWAY}]
     ):
         return None
     network_id = network.get("Id")
