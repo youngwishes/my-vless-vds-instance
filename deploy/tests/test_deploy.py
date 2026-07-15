@@ -414,6 +414,8 @@ def _expected_network() -> dict[str, object]:
             "com.docker.compose.network": "management",
         },
         "IPAM": {
+            "Driver": "default",
+            "Options": None,
             "Config": [{"Subnet": MANAGEMENT_SUBNET, "Gateway": "172.31.255.1"}]
         },
         "Containers": {},
@@ -478,6 +480,38 @@ def test_network_preflight_accepts_docker_29_normalized_bridge_inspect(
     routes = [{"dst": MANAGEMENT_SUBNET, "dev": "br-abcdef012345"}]
 
     assert validator(addresses, routes, [network], [], "vless-agent")
+
+
+@pytest.mark.parametrize("ipam_options", [None, {}])
+def test_network_preflight_accepts_semantically_default_ipam_options(
+    ipam_options: object,
+) -> None:
+    validator = _load_role_filters()["vless_agent_network_preflight_safe"]
+    network = _expected_network()
+    network["IPAM"]["Options"] = ipam_options
+
+    assert validator([], [], [network], [], "vless-agent")
+
+
+@pytest.mark.parametrize(
+    "mutate",
+    [
+        lambda ipam: ipam.pop("Driver"),
+        lambda ipam: ipam.update(Driver="custom"),
+        lambda ipam: ipam.pop("Options"),
+        lambda ipam: ipam.update(Options=""),
+        lambda ipam: ipam.update(Options=[]),
+        lambda ipam: ipam.update(Options={"custom": "value"}),
+    ],
+)
+def test_network_preflight_rejects_ipam_driver_or_options_drift(
+    mutate: object,
+) -> None:
+    validator = _load_role_filters()["vless_agent_network_preflight_safe"]
+    network = _expected_network()
+    mutate(network["IPAM"])
+
+    assert not validator([], [], [network], [], "vless-agent")
 
 
 @pytest.mark.parametrize(
@@ -781,7 +815,10 @@ def _runtime_inspection(*, agent_ports: object = None) -> tuple[list[dict[str, o
     return [network], [xray], [agent]
 
 
-def test_runtime_topology_accepts_docker_29_normalized_bridge_inspect() -> None:
+@pytest.mark.parametrize("ipam_options", [None, {}])
+def test_runtime_topology_accepts_docker_29_normalized_bridge_inspect(
+    ipam_options: object,
+) -> None:
     validator = _load_role_filters()["vless_agent_valid_runtime_topology"]
     network, xray, agent = _runtime_inspection()
     network[0]["Options"] = {
@@ -789,6 +826,7 @@ def test_runtime_topology_accepts_docker_29_normalized_bridge_inspect() -> None:
         "com.docker.network.enable_ipv6": "false",
     }
     network[0]["IPAM"]["Config"][0]["IPRange"] = ""
+    network[0]["IPAM"]["Options"] = ipam_options
 
     assert validator(network, xray, agent, "vless-agent")
 
@@ -806,6 +844,11 @@ def test_runtime_topology_validator_accepts_exact_inspection_with_no_agent_bindi
     [
         lambda network, xray, agent: network[0].update(Internal=False),
         lambda network, xray, agent: network[0].update(Driver="macvlan"),
+        lambda network, xray, agent: network[0]["IPAM"].update(Driver="custom"),
+        lambda network, xray, agent: network[0]["IPAM"].pop("Driver"),
+        lambda network, xray, agent: network[0]["IPAM"].update(
+            Options={"custom": "value"}
+        ),
         lambda network, xray, agent: network[0].update(
             Options={"com.docker.network.bridge.name": "custom"}
         ),

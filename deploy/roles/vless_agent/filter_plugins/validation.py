@@ -146,6 +146,16 @@ def _expected_network_bridge(
     ipam = network.get("IPAM")
     if not isinstance(labels, Mapping) or not isinstance(ipam, Mapping):
         return None
+    ipam_options = ipam.get("Options")
+    if (
+        ipam.get("Driver") != "default"
+        or "Options" not in ipam
+        or (
+            ipam_options is not None
+            and (not isinstance(ipam_options, Mapping) or bool(ipam_options))
+        )
+    ):
+        return None
     configs = ipam.get("Config")
     options = network.get("Options")
     allowed_options = {
