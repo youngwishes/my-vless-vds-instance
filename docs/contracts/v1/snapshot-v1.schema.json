@@ -1,0 +1,89 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://beatvault.ru/contracts/vless-agent/snapshot-v1.schema.json",
+  "title": "VLESS agent exact snapshot v1",
+  "description": "An exact desired set for one managed Xray inbound. The accesses array MUST be strictly ascending by numeric access_id and contain no duplicate access_id.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "snapshot_revision",
+    "snapshot_hash",
+    "accesses"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": "1.0",
+      "description": "Snapshot schema major.minor. An unknown major is incompatible."
+    },
+    "snapshot_revision": {
+      "type": "integer",
+      "minimum": 1,
+      "description": "Monotonically increasing revision scoped to one node."
+    },
+    "snapshot_hash": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$",
+      "description": "Lowercase SHA-256 of the canonical hash input described by x-canonicalization."
+    },
+    "accesses": {
+      "type": "array",
+      "maxItems": 5000,
+      "x-sorted-by": "access_id:numeric:ascending:unique",
+      "items": {
+        "$ref": "#/$defs/access"
+      }
+    }
+  },
+  "$defs": {
+    "access": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "access_id",
+        "uuid",
+        "access_revision"
+      ],
+      "properties": {
+        "access_id": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "uuid": {
+          "type": "string",
+          "format": "uuid",
+          "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+          "description": "Canonical lowercase hyphenated UUID."
+        },
+        "access_revision": {
+          "type": "integer",
+          "minimum": 1
+        }
+      }
+    }
+  },
+  "x-max-canonical-bytes": 1048576,
+  "x-canonicalization": {
+    "hash": "sha256-lowercase-hex",
+    "encoding": "utf-8",
+    "ensure_ascii": false,
+    "object_keys": "recursive-lexicographic-sort",
+    "json_separators": [
+      ",",
+      ":"
+    ],
+    "bom": false,
+    "trailing_newline": false,
+    "hash_input_properties": [
+      "schema_version",
+      "snapshot_revision",
+      "accesses"
+    ],
+    "excluded": [
+      "snapshot_hash",
+      "http_metadata",
+      "authentication_metadata",
+      "transport_metadata"
+    ]
+  }
+}
