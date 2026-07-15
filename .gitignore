@@ -14,3 +14,5 @@ build/
 dist/
 htmlcov/
 .coverage
+# A-010 release evidence is generated externally for one exact reviewed SHA.
+release-evidence*.json

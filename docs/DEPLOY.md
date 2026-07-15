@@ -52,6 +52,13 @@ certificate/domain, and the verified exact checkout SHA. After test health, run
 backend reconcile and verify the expected snapshot revision and hash before
 considering production.
 
+After review and the complete test-node smoke, create the external closed report
+described in `RELEASE_EVIDENCE.md`. Validate it against the exact current HEAD;
+the candidate, reviewed, test-deployed, deployed-agent, and health-agent SHAs
+must be identical. The report is not stored in Git. Any tracked change after
+review or test deployment invalidates that evidence and requires a new review,
+test deployment, smoke, and report for the new SHA.
+
 The host firewall has one narrow loopback-interface exception for management
 health requests originating on the node itself. It matches `-i lo`, not a source
 address range; every external interface remains restricted to the explicit
@@ -100,6 +107,7 @@ Immediately before any production execution, stop and obtain **explicit user
 approval** for the exact reviewed/test-deployed SHA and named target inventory.
 This explicit user approval is a mandatory, fresh production gate.
 Earlier feature, merge, test, or rollback approval is not production approval.
+Successful release-evidence validation is also not production approval.
 After approval, use `deploy/playbook-prod.yml`; it has `serial: 1`, fail-fast
 behavior, and a bounded health gate after every host. Recheck firewall counters,
 TLS hostname/expiry, agent evidence, backend health, and reconcile before the

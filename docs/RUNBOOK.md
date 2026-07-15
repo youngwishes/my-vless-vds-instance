@@ -40,6 +40,11 @@ the backend's complete exact snapshot without hand-editing either copy.
 6. Restore subscriber traffic gradually and watch readiness, drift, apply,
    Xray, and transport-plane signals.
 
+Operational diagnostic records may be access-controlled outside the repository,
+but the A-010 release-evidence JSON has the narrower closed schema documented in
+`RELEASE_EVIDENCE.md`. Do not copy hostnames, IPs, certificate data, snapshot
+hashes, credentials, payloads, or free-form diagnostic notes into that JSON.
+
 For a no-snapshot startup, keep the listener isolated: `NOT_READY` is expected.
 Trigger a full backend reconcile; only the resulting exact PUT and matching
 probe may make the node ready. For a corrupt or unsafe durable file, preserve it
