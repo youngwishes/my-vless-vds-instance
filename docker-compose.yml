@@ -1,0 +1,17 @@
+services:
+  agent:
+    build:
+      context: .
+    cap_drop:
+      - ALL
+    environment:
+      ENVIRONMENT_MODE: production
+      VLESS_NODE_ID: ${VLESS_NODE_ID:-}
+    ports:
+      - "127.0.0.1:${VLESS_AGENT_PORT:-8000}:8000"
+    read_only: true
+    restart: unless-stopped
+    security_opt:
+      - no-new-privileges:true
+    tmpfs:
+      - /tmp

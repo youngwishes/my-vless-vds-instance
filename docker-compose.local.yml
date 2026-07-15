@@ -1,0 +1,21 @@
+services:
+  agent:
+    build:
+      context: .
+    command:
+      - uvicorn
+      - src.app:create_app_from_env
+      - --factory
+      - --host
+      - 0.0.0.0
+      - --port
+      - "8000"
+      - --reload
+    environment:
+      ENVIRONMENT_MODE: local
+      VLESS_NODE_ID: ${VLESS_NODE_ID:-local-node}
+    ports:
+      - "127.0.0.1:${VLESS_AGENT_PORT:-8000}:8000"
+    volumes:
+      - ./src:/app/src:ro
+
