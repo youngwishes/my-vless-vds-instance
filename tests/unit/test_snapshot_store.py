@@ -8,7 +8,13 @@ from pathlib import Path
 import pytest
 
 from src.api.schemas import SnapshotDTO
-from src.storage import SnapshotRecoveryError, SnapshotStore, SnapshotStoreError
+from src.domain import MAX_CANONICAL_BYTES
+from src.storage import (
+    MAX_PERSISTED_SNAPSHOT_BYTES,
+    SnapshotRecoveryError,
+    SnapshotStore,
+    SnapshotStoreError,
+)
 
 
 def _snapshot(*, revision: int = 7) -> SnapshotDTO:
@@ -83,6 +89,68 @@ def test_new_parent_directory_is_exactly_private_despite_process_umask(
     assert stat.S_IMODE(path.stat().st_mode) == 0o600
 
 
+def test_save_syscalls_make_new_directory_and_snapshot_entry_durable_in_order(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    path = tmp_path / "private" / "snapshot.json"
+    events: list[str] = []
+    real_fsync = os.fsync
+    real_replace = os.replace
+    containing_parent = tmp_path.stat()
+
+    def observed_fsync(descriptor: int) -> None:
+        metadata = os.fstat(descriptor)
+        if stat.S_ISREG(metadata.st_mode):
+            assert metadata.st_size > 0
+            assert os.pread(descriptor, metadata.st_size, 0).startswith(b'{"accesses"')
+            events.append("temp-flushed-and-fsynced")
+        elif (metadata.st_dev, metadata.st_ino) == (
+            containing_parent.st_dev,
+            containing_parent.st_ino,
+        ):
+            events.append("new-directory-parent-fsynced")
+        else:
+            events.append("snapshot-directory-fsynced")
+        real_fsync(descriptor)
+
+    def observed_replace(
+        source: str | Path, target: str | Path, **kwargs: int
+    ) -> None:
+        events.append("replace")
+        real_replace(source, target, **kwargs)
+
+    monkeypatch.setattr(os, "fsync", observed_fsync)
+    monkeypatch.setattr(os, "replace", observed_replace)
+
+    SnapshotStore(path=path).save(snapshot=_snapshot())
+
+    replace_index = events.index("replace")
+    assert events.index("new-directory-parent-fsynced") < replace_index
+    assert events.index("temp-flushed-and-fsynced") < replace_index
+    assert "snapshot-directory-fsynced" in events[replace_index + 1 :]
+
+
+@pytest.mark.parametrize("unsafe_kind", ["symlink", "file"])
+def test_save_rejects_unsafe_parent_components_without_following_them(
+    tmp_path: Path, unsafe_kind: str
+) -> None:
+    unsafe_parent = tmp_path / "unsafe"
+    if unsafe_kind == "symlink":
+        actual_directory = tmp_path / "actual"
+        actual_directory.mkdir()
+        unsafe_parent.symlink_to(actual_directory)
+    else:
+        unsafe_parent.write_text("not a directory", encoding="utf-8")
+    path = unsafe_parent / "snapshot.json"
+
+    with pytest.raises(SnapshotStoreError, match="stored safely") as captured:
+        SnapshotStore(path=path).save(snapshot=_snapshot())
+
+    assert str(path) not in str(captured.value)
+    if unsafe_kind == "symlink":
+        assert not (actual_directory / "snapshot.json").exists()
+
+
 def test_replace_failure_keeps_last_durable_snapshot_and_cleans_temp_files(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -91,7 +159,10 @@ def test_replace_failure_keeps_last_durable_snapshot_and_cleans_temp_files(
     old = _snapshot(revision=7)
     store.save(snapshot=old)
 
-    def fail_replace(source: str | Path, target: str | Path) -> None:
+    def fail_replace(
+        source: str | Path, target: str | Path, **kwargs: int
+    ) -> None:
+        del source, target, kwargs
         raise OSError("simulated replace failure containing sensitive paths")
 
     monkeypatch.setattr(os, "replace", fail_replace)
@@ -157,3 +228,58 @@ def test_symlink_and_non_regular_files_are_rejected(tmp_path: Path) -> None:
     symlink.mkdir()
     with pytest.raises(SnapshotRecoveryError, match="regular file"):
         SnapshotStore(path=symlink).load()
+
+
+def test_persisted_size_limit_has_bounded_envelope_overhead() -> None:
+    assert MAX_PERSISTED_SNAPSHOT_BYTES == MAX_CANONICAL_BYTES + 128
+
+
+def test_oversized_snapshot_is_rejected_before_any_read(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    path = tmp_path / "snapshot.json"
+    with path.open("wb") as oversized:
+        oversized.truncate(MAX_PERSISTED_SNAPSHOT_BYTES + 1)
+    path.chmod(0o600)
+
+    def unexpected_read(descriptor: int, size: int) -> bytes:
+        raise AssertionError(f"unexpected read of {size} bytes from fd {descriptor}")
+
+    def unexpected_fdopen(descriptor: int, mode: str) -> object:
+        raise AssertionError(f"unexpected fdopen of fd {descriptor} in mode {mode}")
+
+    monkeypatch.setattr(os, "read", unexpected_read)
+    monkeypatch.setattr(os, "fdopen", unexpected_fdopen)
+
+    with pytest.raises(SnapshotRecoveryError, match="cannot be recovered") as captured:
+        SnapshotStore(path=path).load()
+
+    assert str(path) not in str(captured.value)
+
+
+@pytest.mark.parametrize("race", ["growth", "truncation"])
+def test_load_is_bounded_and_rejects_file_size_races(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, race: str
+) -> None:
+    path = tmp_path / "snapshot.json"
+    SnapshotStore(path=path).save(snapshot=_snapshot())
+    original_size = path.stat().st_size
+    real_read = os.read
+    observed_sizes: list[int] = []
+
+    def racing_read(descriptor: int, size: int) -> bytes:
+        observed_sizes.append(size)
+        if race == "growth":
+            with path.open("ab") as persisted:
+                persisted.write(b"x")
+        else:
+            with path.open("r+b") as persisted:
+                persisted.truncate(original_size - 1)
+        return real_read(descriptor, size)
+
+    monkeypatch.setattr(os, "read", racing_read)
+
+    with pytest.raises(SnapshotRecoveryError, match="cannot be recovered"):
+        SnapshotStore(path=path).load()
+
+    assert observed_sizes == [MAX_PERSISTED_SNAPSHOT_BYTES + 1]

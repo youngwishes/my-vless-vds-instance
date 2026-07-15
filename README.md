@@ -103,7 +103,8 @@ The snapshot directory is created with mode `0700`; the snapshot and its unique
 same-directory temporary file use exact mode `0600`. The JSON contains only the
 schema version, revision, hash, and managed accesses (including their inherent
 UUIDs). It must be stored on a private persistent volume and must not be logged,
-published, or edited by hand.
+published, or edited by hand. Each newly created cache-directory entry is
+synced through its containing directory before snapshot persistence continues.
 
 On startup, a missing snapshot is a clean first boot and the agent stays not
 ready. A valid durable snapshot is validated and reapplied to Xray, after which
