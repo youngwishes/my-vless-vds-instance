@@ -14,6 +14,7 @@ from src.xray import (
     XrayTimeoutError,
     XrayUnavailableError,
     XrayUser,
+    VLESS_VISION_FLOW,
     access_email,
 )
 
@@ -59,6 +60,7 @@ def test_adds_missing_users_in_numeric_access_order() -> None:
             user=XrayUser(
                 email=access_email(2),
                 uuid=first.uuid,
+                flow=VLESS_VISION_FLOW,
             ),
         ),
         call.add_user(
@@ -66,6 +68,7 @@ def test_adds_missing_users_in_numeric_access_order() -> None:
             user=XrayUser(
                 email=access_email(10),
                 uuid=second.uuid,
+                flow=VLESS_VISION_FLOW,
             ),
         ),
     ]
@@ -74,8 +77,16 @@ def test_adds_missing_users_in_numeric_access_order() -> None:
 def test_removes_obsolete_users_in_stable_email_order() -> None:
     client = Mock()
     client.get_inbound_users.return_value = (
-        XrayUser(email=access_email(10), uuid="2f1c5a63-7bd6-4ac1-86dc-16b7adf580df"),
-        XrayUser(email=access_email(2), uuid="01890f47-a2d4-7c11-b3e6-89f40d8639f1"),
+        XrayUser(
+            email=access_email(10),
+            uuid="2f1c5a63-7bd6-4ac1-86dc-16b7adf580df",
+            flow=VLESS_VISION_FLOW,
+        ),
+        XrayUser(
+            email=access_email(2),
+            uuid="01890f47-a2d4-7c11-b3e6-89f40d8639f1",
+            flow=VLESS_VISION_FLOW,
+        ),
     )
 
     _service(client)(accesses=())
@@ -92,14 +103,39 @@ def test_replaces_changed_uuid_by_removing_before_adding() -> None:
     old_uuid = "01890f47-a2d4-7c11-b3e6-89f40d8639f1"
     new_uuid = "2f1c5a63-7bd6-4ac1-86dc-16b7adf580df"
     email = access_email(2)
-    client.get_inbound_users.return_value = (XrayUser(email=email, uuid=old_uuid),)
+    client.get_inbound_users.return_value = (
+        XrayUser(email=email, uuid=old_uuid, flow=VLESS_VISION_FLOW),
+    )
 
     _service(client)(accesses=(_access(2, new_uuid, access_revision=2),))
 
     assert client.mock_calls == [
         call.get_inbound_users(tag=MANAGED_TAG),
         call.remove_user(tag=MANAGED_TAG, email=email),
-        call.add_user(tag=MANAGED_TAG, user=XrayUser(email=email, uuid=new_uuid)),
+        call.add_user(
+            tag=MANAGED_TAG,
+            user=XrayUser(email=email, uuid=new_uuid, flow=VLESS_VISION_FLOW),
+        ),
+    ]
+
+
+def test_replaces_matching_uuid_when_vless_flow_is_wrong() -> None:
+    client = Mock()
+    uuid = "01890f47-a2d4-7c11-b3e6-89f40d8639f1"
+    email = access_email(2)
+    client.get_inbound_users.return_value = (
+        XrayUser(email=email, uuid=uuid, flow=""),
+    )
+
+    _service(client)(accesses=(_access(2, uuid),))
+
+    assert client.mock_calls == [
+        call.get_inbound_users(tag=MANAGED_TAG),
+        call.remove_user(tag=MANAGED_TAG, email=email),
+        call.add_user(
+            tag=MANAGED_TAG,
+            user=XrayUser(email=email, uuid=uuid, flow=VLESS_VISION_FLOW),
+        ),
     ]
 
 
@@ -108,6 +144,7 @@ def test_repeated_exact_set_is_a_no_op() -> None:
     user = XrayUser(
         email=access_email(2),
         uuid="01890f47-a2d4-7c11-b3e6-89f40d8639f1",
+        flow=VLESS_VISION_FLOW,
     )
     client.get_inbound_users.return_value = (user,)
 

@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, final
 
-from src.xray.dtos import XrayUser, access_email
+from src.xray.dtos import VLESS_VISION_FLOW, XrayUser, access_email
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
@@ -23,6 +23,7 @@ class ApplyExactSetService:
             access_email(access.access_id): XrayUser(
                 email=access_email(access.access_id),
                 uuid=access.uuid,
+                flow=VLESS_VISION_FLOW,
             )
             for access in accesses
         }
@@ -35,7 +36,7 @@ class ApplyExactSetService:
             (
                 email
                 for email, user in current.items()
-                if email not in desired or desired[email].uuid != user.uuid
+                if email not in desired or desired[email] != user
             ),
             key=_email_sort_key,
         )
@@ -43,7 +44,7 @@ class ApplyExactSetService:
             (
                 user
                 for email, user in desired.items()
-                if email not in current or current[email].uuid != user.uuid
+                if email not in current or current[email] != user
             ),
             key=lambda user: int(user.email.removeprefix("vless-access-").split("@", 1)[0]),
         )

@@ -64,13 +64,19 @@ class GrpcXrayClient:
                 if not _CANONICAL_UUID.fullmatch(account.id):
                     raise XrayProtocolError("Xray returned an invalid VLESS account")
                 seen_emails.add(raw_user.email)
-                users.append(XrayUser(email=raw_user.email, uuid=account.id))
+                users.append(
+                    XrayUser(
+                        email=raw_user.email,
+                        uuid=account.id,
+                        flow=account.flow,
+                    )
+                )
         except DecodeError as error:
             raise XrayProtocolError("Xray returned an invalid protocol message") from error
         return tuple(sorted(users, key=lambda user: user.email))
 
     def add_user(self, *, tag: str, user: XrayUser) -> None:
-        account = VlessAccount(id=user.uuid, flow="xtls-rprx-vision")
+        account = VlessAccount(id=user.uuid, flow=user.flow)
         protocol_user = User(
             email=user.email,
             account=TypedMessage(

@@ -12,7 +12,12 @@ import pytest
 from src.api.schemas import AccessDTO
 from src.app import create_app
 from src.config import EnvironmentMode, Settings
-from src.xray import XrayUser, access_email, create_apply_exact_set_service
+from src.xray import (
+    VLESS_VISION_FLOW,
+    XrayUser,
+    access_email,
+    create_apply_exact_set_service,
+)
 
 
 XRAY_VERSION = "26.7.11"
@@ -47,7 +52,16 @@ def _xray_config() -> dict[str, object]:
                 "listen": "127.0.0.1",
                 "port": 11001,
                 "protocol": "vless",
-                "settings": {"clients": [], "decryption": "none"},
+                "settings": {
+                    "clients": [
+                        {
+                            "id": "01890f47-a2d4-7c11-b3e6-89f40d8639f1",
+                            "email": "vless-access-2@agent.invalid",
+                            "flow": "",
+                        }
+                    ],
+                    "decryption": "none",
+                },
             },
             {
                 "tag": UNMANAGED_TAG,
@@ -162,17 +176,37 @@ def test_real_xray_reconciles_exact_set_and_preserves_unmanaged_inbound(
     first = _access(2, "01890f47-a2d4-7c11-b3e6-89f40d8639f1")
     second = _access(10, "2f1c5a63-7bd6-4ac1-86dc-16b7adf580df")
 
+    assert service.client.get_inbound_users(tag=MANAGED_TAG) == (
+        XrayUser(email=access_email(2), uuid=first.uuid, flow=""),
+    )
     service(accesses=(first, second))
+    assert set(service.client.get_inbound_users(tag=MANAGED_TAG)) == {
+        XrayUser(
+            email=access_email(2),
+            uuid=first.uuid,
+            flow=VLESS_VISION_FLOW,
+        ),
+        XrayUser(
+            email=access_email(10),
+            uuid=second.uuid,
+            flow=VLESS_VISION_FLOW,
+        ),
+    }
     service(accesses=(first, second))
     service(accesses=(_access(2, second.uuid, revision=2),))
 
     assert service.client.get_inbound_users(tag=MANAGED_TAG) == (
-        XrayUser(email=access_email(2), uuid=second.uuid),
+        XrayUser(
+            email=access_email(2),
+            uuid=second.uuid,
+            flow=VLESS_VISION_FLOW,
+        ),
     )
     assert service.client.get_inbound_users(tag=UNMANAGED_TAG) == (
         XrayUser(
             email="operator-owned@example.invalid",
             uuid="aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+            flow="",
         ),
     )
 
@@ -182,13 +216,21 @@ def test_public_routes_contain_no_incremental_mutation_endpoint() -> None:
         settings=Settings(
             vless_node_id="node-01",
             environment_mode=EnvironmentMode.TEST,
-            node_api_token_current="a" * 32,
+            agent_token_current="a" * 32,
         )
     )
 
-    paths = {route.path.lower() for route in app.routes}
+    framework_routes = {
+        ("/docs", "GET"),
+        ("/docs/oauth2-redirect", "GET"),
+        ("/openapi.json", "GET"),
+        ("/redoc", "GET"),
+    }
+    all_routes = {
+        (route.path, method)
+        for route in app.routes
+        for method in getattr(route, "methods", set())
+    }
+    application_routes = all_routes - framework_routes
 
-    assert all("add" not in path for path in paths)
-    assert all("remove" not in path for path in paths)
-    assert all("delete" not in path for path in paths)
-    assert all("user" not in path for path in paths)
+    assert application_routes == set()

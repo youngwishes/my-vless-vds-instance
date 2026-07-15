@@ -1,7 +1,7 @@
 """Exact-set adapter for the one agent-owned Xray inbound."""
 
 from src.xray.client import GrpcXrayClient, XrayClient
-from src.xray.dtos import XrayUser, access_email
+from src.xray.dtos import VLESS_VISION_FLOW, XrayUser, access_email
 from src.xray.exact_set_service import ApplyExactSetService, create_apply_exact_set_service
 from src.xray.exceptions import (
     XrayError,
@@ -19,6 +19,7 @@ __all__ = (
     "XrayTimeoutError",
     "XrayUnavailableError",
     "XrayUser",
+    "VLESS_VISION_FLOW",
     "access_email",
     "create_apply_exact_set_service",
 )
