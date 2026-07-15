@@ -111,6 +111,8 @@ def test_environment_app_factory_rejects_whitespace_node_identity(
         ("AGENT_SHA", "0" * 40),
         ("XRAY_VERSION", "unknown"),
         ("XRAY_VERSION", "   "),
+        ("XRAY_VERSION", "replace-with-pinned-xray-version"),
+        ("XRAY_VERSION", "local"),
         ("XRAY_IMAGE_DIGEST", "sha256:" + "0" * 64),
         ("XRAY_API_TARGET", "   "),
         ("XRAY_MANAGED_INBOUND_TAG", "   "),
@@ -137,3 +139,20 @@ def test_production_environment_factory_rejects_false_or_unsafe_runtime_evidence
 
     with pytest.raises(ValidationError):
         create_app_from_env()
+
+
+def test_production_environment_factory_accepts_pinned_numeric_xray_release(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("VLESS_NODE_ID", "node-01")
+    monkeypatch.setenv("ENVIRONMENT_MODE", "production")
+    monkeypatch.setenv("AGENT_TOKEN_CURRENT", "x" * 32)
+    monkeypatch.setenv("AGENT_SHA", "a" * 40)
+    monkeypatch.setenv("XRAY_VERSION", "26.7.11")
+    monkeypatch.setenv("XRAY_IMAGE_DIGEST", "sha256:" + "b" * 64)
+
+    app = create_app_from_env()
+
+    assert app.state.settings.xray_version == "26.7.11"

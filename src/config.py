@@ -20,6 +20,7 @@ MINIMUM_PRODUCTION_TOKEN_LENGTH = 32
 _BEARER_TOKEN_PATTERN = re.compile(r"[A-Za-z0-9\-._~+/]+={0,}")
 _AGENT_SHA_PATTERN = re.compile(r"[0-9a-f]{40}")
 _IMAGE_DIGEST_PATTERN = re.compile(r"sha256:[0-9a-f]{64}")
+_XRAY_VERSION_PATTERN = re.compile(r"[0-9]+\.[0-9]+\.[0-9]+")
 
 
 class Settings(BaseSettings):
@@ -93,8 +94,8 @@ class Settings(BaseSettings):
                 )
         if self.agent_sha == "0" * 40:
             raise ValueError("agent_sha must identify the deployed commit")
-        if not self.xray_version.strip() or self.xray_version.strip().lower() == "unknown":
-            raise ValueError("xray_version must identify the deployed Xray build")
+        if _XRAY_VERSION_PATTERN.fullmatch(self.xray_version) is None:
+            raise ValueError("xray_version must be a pinned numeric N.N.N release")
         if self.xray_image_digest == "sha256:" + "0" * 64:
             raise ValueError("xray_image_digest must identify the deployed image")
         return self
