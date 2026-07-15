@@ -50,6 +50,47 @@ def _redacted_like(value: object) -> object:
     return REDACTED
 
 
+def _sanitize_mapping_key(key: object) -> object:
+    if isinstance(key, str):
+        candidate: object = redact_log_text(key)
+    elif isinstance(key, bytes):
+        candidate = redact_log_text(key.decode("latin-1")).encode("latin-1")
+    elif key is None or isinstance(key, (bool, int, float, complex)):
+        candidate = key
+    elif isinstance(key, tuple):
+        candidate = _redact_log_value(key)
+    else:
+        try:
+            candidate = redact_log_text(str(key))
+        except Exception:
+            candidate = REDACTED
+    try:
+        hash(candidate)
+    except Exception:
+        return REDACTED
+    return candidate
+
+
+def _store_without_collision(
+    target: dict[Any, Any],
+    *,
+    key: object,
+    value: object,
+) -> None:
+    candidate = _sanitize_mapping_key(key)
+    try:
+        collision = candidate in target
+    except Exception:
+        collision = True
+    if collision:
+        suffix = len(target)
+        candidate = f"[REDACTED_KEY_{suffix}]"
+        while candidate in target:
+            suffix += 1
+            candidate = f"[REDACTED_KEY_{suffix}]"
+    target[candidate] = value
+
+
 def _redact_log_value(
     value: Any,
     *,
@@ -76,14 +117,19 @@ def _redact_log_value(
             return REDACTED
         seen.add(identity)
         try:
-            return {
-                item_key: _redact_log_value(
+            redacted_mapping: dict[Any, Any] = {}
+            for item_key, item_value in value.items():
+                redacted_value = _redact_log_value(
                     item_value,
                     key=item_key,
                     seen=seen,
                 )
-                for item_key, item_value in value.items()
-            }
+                _store_without_collision(
+                    redacted_mapping,
+                    key=item_key,
+                    value=redacted_value,
+                )
+            return redacted_mapping
         except Exception:
             return REDACTED
         finally:
@@ -133,8 +179,8 @@ class BearerCredentialRedactionFilter(logging.Filter):
         try:
             rendered_message = record.getMessage()
         except Exception:
-            record.msg = _redact_log_value(record.msg)
-            record.args = _redact_log_value(record.args)
+            record.msg = REDACTED
+            record.args = ()
         else:
             record.msg = redact_log_text(rendered_message)
             record.args = ()
@@ -151,15 +197,19 @@ class BearerCredentialRedactionFilter(logging.Filter):
         if record.stack_info is not None:
             record.stack_info = redact_log_text(record.stack_info)
 
-        custom_keys = tuple(
-            key
-            for key in record.__dict__
-            if key not in _STANDARD_LOG_RECORD_ATTRIBUTES
+        custom_items = tuple(
+            (key, value)
+            for key, value in record.__dict__.items()
+            if not isinstance(key, str)
+            or key not in _STANDARD_LOG_RECORD_ATTRIBUTES
         )
-        for key in custom_keys:
-            record.__dict__[key] = _redact_log_value(
-                record.__dict__[key],
+        for key, _ in custom_items:
+            del record.__dict__[key]
+        for key, value in custom_items:
+            _store_without_collision(
+                record.__dict__,
                 key=key,
+                value=_redact_log_value(value, key=key),
             )
 
     def _apply_safe_fallback(self, record: logging.LogRecord) -> None:
@@ -168,9 +218,16 @@ class BearerCredentialRedactionFilter(logging.Filter):
         record.exc_info = None
         record.exc_text = REDACTED
         record.stack_info = None
-        for key in tuple(record.__dict__):
-            if key not in _STANDARD_LOG_RECORD_ATTRIBUTES:
-                record.__dict__[key] = REDACTED
+        custom_keys = tuple(
+            key
+            for key in record.__dict__
+            if not isinstance(key, str)
+            or key not in _STANDARD_LOG_RECORD_ATTRIBUTES
+        )
+        for key in custom_keys:
+            del record.__dict__[key]
+        if custom_keys:
+            record.__dict__["redaction_failure"] = REDACTED
 
 
 def install_logging_redaction() -> None:

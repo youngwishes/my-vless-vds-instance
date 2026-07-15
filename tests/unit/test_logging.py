@@ -22,6 +22,16 @@ class _CollectingHandler(logging.Handler):
         self.records.append(record)
 
 
+class _RenderingCollectingHandler(_CollectingHandler):
+    def __init__(self) -> None:
+        super().__init__()
+        self.rendered: list[str] = []
+
+    def emit(self, record: logging.LogRecord) -> None:
+        super().emit(record)
+        self.rendered.append(self.format(record))
+
+
 class _SecretStringObject:
     def __str__(self) -> str:
         return f"Authorization: Bearer {TOKEN}"
@@ -30,6 +40,14 @@ class _SecretStringObject:
 class _BrokenStringObject:
     def __str__(self) -> str:
         raise RuntimeError("cannot stringify")
+
+
+class _BrokenKey:
+    def __str__(self) -> str:
+        raise RuntimeError("cannot stringify key")
+
+    def __repr__(self) -> str:
+        raise RuntimeError("cannot represent key")
 
 
 def test_redaction_filter_removes_bearer_and_authorization_values() -> None:
@@ -211,6 +229,36 @@ def test_installed_redaction_preserves_deferred_formatting_failure() -> None:
         logger.propagate = previous_propagate
 
 
+def test_failed_formatting_discards_all_args_and_emits_safe_fallback() -> None:
+    create_app(
+        settings=Settings(
+            vless_node_id="node-01",
+            environment_mode=EnvironmentMode.TEST,
+            agent_token_current="explicit-test-token",
+        )
+    )
+    handler = _RenderingCollectingHandler()
+    logger = logging.getLogger("agent.failed-secret-formatting")
+    previous_level = logger.level
+    previous_propagate = logger.propagate
+    logger.setLevel(logging.INFO)
+    logger.propagate = False
+    logger.addHandler(handler)
+    try:
+        logger.info("Authorization: %d", TOKEN)
+    finally:
+        logger.removeHandler(handler)
+        logger.setLevel(previous_level)
+        logger.propagate = previous_propagate
+
+    record = handler.records[0]
+    assert record.args == ()
+    assert TOKEN not in str(record.msg)
+    assert TOKEN not in str(record.args)
+    assert TOKEN not in handler.rendered[0]
+    assert handler.rendered[0] == "[REDACTED]"
+
+
 def test_installed_redaction_handles_self_referential_extra() -> None:
     create_app(
         settings=Settings(
@@ -295,6 +343,87 @@ def test_installed_redaction_safely_stringifies_unknown_extra_objects() -> None:
     assert record.broken_object == "[REDACTED]"
     assert record.attempt == 3
     assert record.enabled is True
+
+
+def test_installed_redaction_sanitizes_nested_mapping_keys() -> None:
+    create_app(
+        settings=Settings(
+            vless_node_id="node-01",
+            environment_mode=EnvironmentMode.TEST,
+            agent_token_current="explicit-test-token",
+        )
+    )
+    handler = _CollectingHandler()
+    logger = logging.getLogger("agent.mapping-keys")
+    logger.addHandler(handler)
+    try:
+        logger.warning(
+            "request rejected",
+            extra={
+                "payload": {
+                    f"Authorization: Bearer {TOKEN}": "first",
+                    f"Authorization: Bearer {TOKEN}".encode(): "second",
+                    "Authorization": f"Bearer {TOKEN}",
+                    "safe_key": "visible",
+                }
+            },
+        )
+    finally:
+        logger.removeHandler(handler)
+
+    payload = handler.records[0].payload
+    assert TOKEN not in str(payload)
+    assert payload["Authorization"] == "[REDACTED]"
+    assert payload["safe_key"] == "visible"
+    assert set(payload.values()) == {"first", "second", "[REDACTED]", "visible"}
+
+
+def test_installed_redaction_sanitizes_top_level_custom_keys_without_collision() -> None:
+    create_app(
+        settings=Settings(
+            vless_node_id="node-01",
+            environment_mode=EnvironmentMode.TEST,
+            agent_token_current="explicit-test-token",
+        )
+    )
+    handler = _CollectingHandler()
+    logger = logging.getLogger("agent.top-level-keys")
+    logger.addHandler(handler)
+    first_broken_key = _BrokenKey()
+    second_broken_key = _BrokenKey()
+    secret_custom_key = _SecretStringObject()
+    try:
+        logger.warning(
+            "request rejected",
+            extra={
+                f"Authorization: Bearer {TOKEN}": "string-key",
+                f"Authorization: Bearer {TOKEN}".encode(): "bytes-key",
+                first_broken_key: "first-broken",
+                second_broken_key: "second-broken",
+                secret_custom_key: "custom-secret-key",
+                "safe_key": "visible",
+            },
+        )
+    finally:
+        logger.removeHandler(handler)
+
+    record_values = set(handler.records[0].__dict__.values())
+    assert {
+        "string-key",
+        "bytes-key",
+        "first-broken",
+        "second-broken",
+        "custom-secret-key",
+        "visible",
+    }.issubset(record_values)
+    assert handler.records[0].safe_key == "visible"
+    for key in handler.records[0].__dict__:
+        if isinstance(key, bytes):
+            assert TOKEN.encode() not in key
+        elif isinstance(key, str):
+            assert TOKEN not in key
+        else:
+            raise AssertionError("custom logging key was not normalized safely")
 
 
 def test_redaction_filter_scrubs_structured_authorization_field() -> None:
