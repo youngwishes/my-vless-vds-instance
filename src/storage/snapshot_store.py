@@ -46,6 +46,7 @@ class SnapshotStore:
 
         directory_descriptor: int | None = None
         temporary_name: str | None = None
+        store_failed = False
 
         try:
             directory_descriptor = _open_parent_directory(
@@ -76,8 +77,8 @@ class SnapshotStore:
             )
             temporary_name = None
             os.fsync(directory_descriptor)
-        except OSError as error:
-            raise SnapshotStoreError("snapshot could not be stored safely") from error
+        except OSError:
+            store_failed = True
         finally:
             if temporary_name is not None and directory_descriptor is not None:
                 try:
@@ -87,7 +88,9 @@ class SnapshotStore:
                 except OSError:
                     pass
             if directory_descriptor is not None:
-                os.close(directory_descriptor)
+                _close_quietly(directory_descriptor)
+        if store_failed:
+            raise SnapshotStoreError("snapshot could not be stored safely") from None
 
     def load(self) -> SnapshotDTO | None:
         directory_descriptor: int | None = None
@@ -103,14 +106,21 @@ class SnapshotStore:
             )
         except FileNotFoundError:
             if directory_descriptor is not None:
-                os.close(directory_descriptor)
+                _close_quietly(directory_descriptor)
             return None
-        except OSError as error:
+        except OSError:
             if directory_descriptor is not None:
-                os.close(directory_descriptor)
-            raise SnapshotRecoveryError("durable snapshot cannot be recovered safely") from error
+                _close_quietly(directory_descriptor)
+            recovery_failed = True
+        else:
+            recovery_failed = False
+        if recovery_failed:
+            raise SnapshotRecoveryError(
+                "durable snapshot cannot be recovered safely"
+            ) from None
 
         descriptor: int | None = None
+        read_failed = False
         try:
             _validate_snapshot_metadata(metadata)
             flags = (
@@ -146,19 +156,29 @@ class SnapshotStore:
                 )
         except SnapshotRecoveryError:
             raise
-        except OSError as error:
-            raise SnapshotRecoveryError("durable snapshot cannot be recovered safely") from error
+        except OSError:
+            read_failed = True
         finally:
             if descriptor is not None:
-                os.close(descriptor)
+                _close_quietly(descriptor)
             if directory_descriptor is not None:
-                os.close(directory_descriptor)
+                _close_quietly(directory_descriptor)
+        if read_failed:
+            raise SnapshotRecoveryError(
+                "durable snapshot cannot be recovered safely"
+            ) from None
 
+        validation_failed = False
         try:
             snapshot = SnapshotDTO.model_validate_json(raw_payload)
-            return validate_snapshot(snapshot)
-        except (SnapshotError, ValidationError, ValueError, UnicodeError) as error:
-            raise SnapshotRecoveryError("durable snapshot cannot be recovered safely") from error
+            validated = validate_snapshot(snapshot)
+        except (SnapshotError, ValidationError, ValueError, UnicodeError):
+            validation_failed = True
+        if validation_failed:
+            raise SnapshotRecoveryError(
+                "durable snapshot cannot be recovered safely"
+            ) from None
+        return validated
 
 
 def _open_parent_directory(parent: Path, *, create: bool) -> int:
@@ -238,6 +258,13 @@ def _validate_snapshot_metadata(metadata: os.stat_result) -> None:
         raise SnapshotRecoveryError("durable snapshot has unsafe permissions")
     if metadata.st_size > MAX_PERSISTED_SNAPSHOT_BYTES:
         raise SnapshotRecoveryError("durable snapshot cannot be recovered safely")
+
+
+def _close_quietly(descriptor: int) -> None:
+    try:
+        os.close(descriptor)
+    except OSError:
+        pass
 
 
 __all__ = (

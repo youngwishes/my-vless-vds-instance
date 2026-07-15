@@ -218,3 +218,22 @@ def test_permission_race_during_startup_load_never_reaches_xray_or_ready_state(
         StartupRestoreService(apply_accesses=xray, store=store)()
 
     assert xray.calls == []
+
+
+def test_startup_validation_error_has_no_underlying_exception_chain() -> None:
+    invalid = _snapshot(1, 1).model_copy(update={"snapshot_hash": "0" * 64})
+    xray = FakeXray()
+
+    class InvalidStore:
+        def load(self) -> SnapshotDTO:
+            return invalid
+
+        def save(self, *, snapshot: SnapshotDTO) -> None:
+            del snapshot
+
+    with pytest.raises(SnapshotRecoveryError) as captured:
+        StartupRestoreService(apply_accesses=xray, store=InvalidStore())()
+
+    assert captured.value.__cause__ is None
+    assert captured.value.__context__ is None
+    assert xray.calls == []

@@ -83,12 +83,15 @@ class StartupRestoreService:
         if snapshot is None:
             return RecoveryState(status=RecoveryStatus.NO_SNAPSHOT_NOT_READY)
 
+        validation_failed = False
         try:
             validated = validate_snapshot(snapshot)
-        except SnapshotError as error:
+        except SnapshotError:
+            validation_failed = True
+        if validation_failed:
             raise SnapshotRecoveryError(
                 "durable snapshot cannot be recovered safely"
-            ) from error
+            ) from None
         self.apply_accesses(accesses=validated.accesses)
         return RecoveryState(
             status=RecoveryStatus.RECOVERY_READY,

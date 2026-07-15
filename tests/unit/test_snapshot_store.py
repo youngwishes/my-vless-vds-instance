@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 import stat
+import traceback
 from pathlib import Path
 
 import pytest
@@ -173,6 +174,8 @@ def test_replace_failure_keeps_last_durable_snapshot_and_cleans_temp_files(
         store.save(snapshot=_snapshot(revision=8))
 
     assert str(path) not in str(captured.value)
+    assert captured.value.__cause__ is None
+    assert captured.value.__context__ is None
     assert store.load() == old
     assert list(tmp_path.glob(f".{path.name}.*.tmp")) == []
 
@@ -203,6 +206,33 @@ def test_invalid_persisted_content_raises_safe_recovery_error(
 
     assert "00000000" not in str(captured.value)
     assert str(path) not in str(captured.value)
+
+
+def test_malformed_dto_traceback_chain_does_not_leak_uuid_payload_or_path(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "snapshot.json"
+    uuid = "DEADBEEF-DEAD-4BAD-8BAD-DEADBEEFCAFE"
+    raw_payload = (
+        '{"accesses":[{"access_id":1,"access_revision":1,'
+        f'"uuid":"{uuid}"}}],"schema_version":"1.0",'
+        '"snapshot_hash":"0000000000000000000000000000000000000000000000000000000000000000",'
+        '"snapshot_revision":1}'
+    )
+    path.write_text(raw_payload, encoding="utf-8")
+    path.chmod(0o600)
+
+    with pytest.raises(SnapshotRecoveryError) as captured:
+        SnapshotStore(path=path).load()
+
+    formatted_chain = "".join(
+        traceback.format_exception(captured.type, captured.value, captured.tb)
+    )
+    assert uuid not in formatted_chain
+    assert raw_payload not in formatted_chain
+    assert str(path) not in formatted_chain
+    assert captured.value.__cause__ is None
+    assert captured.value.__context__ is None
 
 
 def test_wrong_permissions_are_rejected(tmp_path: Path) -> None:
