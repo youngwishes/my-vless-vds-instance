@@ -406,6 +406,8 @@ def _expected_network() -> dict[str, object]:
     return {
         "Name": "vless-agent_management",
         "Id": "abcdef0123456789",
+        "Driver": "bridge",
+        "Options": {},
         "Internal": True,
         "Labels": {
             "com.docker.compose.project": "vless-agent",
@@ -430,9 +432,9 @@ def test_network_preflight_rejects_equal_subset_and_superset_cidrs(conflict: str
     validator = _load_role_filters()["vless_agent_network_preflight_safe"]
     addresses = [{"ifname": "eth0", "addr_info": [{"family": "inet", "local": str(conflict).split("/")[0], "prefixlen": int(conflict.split("/")[1])}]}]
 
-    assert not validator(addresses, [], [], "vless-agent")
-    assert not validator([], [{"dst": conflict, "dev": "eth0"}], [], "vless-agent")
-    assert not validator([], [], [{"Name": "foreign", "IPAM": {"Config": [{"Subnet": conflict}]}}], "vless-agent")
+    assert not validator(addresses, [], [], [], "vless-agent")
+    assert not validator([], [{"dst": conflict, "dev": "eth0"}], [], [], "vless-agent")
+    assert not validator([], [], [{"Name": "foreign", "IPAM": {"Config": [{"Subnet": conflict}]}}], [], "vless-agent")
 
 
 def test_network_preflight_allows_adjacent_cidr_and_verified_expected_bridge() -> None:
@@ -447,7 +449,7 @@ def test_network_preflight_allows_adjacent_cidr_and_verified_expected_bridge() -
         {"dst": MANAGEMENT_SUBNET, "dev": "br-abcdef012345", "scope": "link"},
     ]
 
-    assert validator(addresses, routes, [expected], "vless-agent")
+    assert validator(addresses, routes, [expected], [], "vless-agent")
 
 
 @pytest.mark.parametrize(
@@ -455,6 +457,8 @@ def test_network_preflight_allows_adjacent_cidr_and_verified_expected_bridge() -
     [
         lambda value: value.update(Name="wrong"),
         lambda value: value.update(Internal=False),
+        lambda value: value.update(Driver="macvlan"),
+        lambda value: value.update(Options={"com.docker.network.bridge.name": "managed"}),
         lambda value: value["Labels"].update({"com.docker.compose.project": "other"}),
         lambda value: value["Labels"].update({"com.docker.compose.network": "other"}),
         lambda value: value["IPAM"]["Config"][0].update(Subnet="172.31.255.0/29"),
@@ -466,31 +470,107 @@ def test_network_preflight_rejects_expected_network_ownership_or_topology_drift(
     network = _expected_network()
     mutate(network)
 
-    assert not validator([], [], [network], "vless-agent")
+    assert not validator([], [], [network], [], "vless-agent")
+
+
+def _preflight_container(
+    *, container_id: str, service: str, address: str, project: str = "vless-agent"
+) -> dict[str, object]:
+    networks = {
+        "vless-agent_management": {"IPAddress": address.split("/", 1)[0]}
+    }
+    if service == "xray":
+        networks["vless-agent_public"] = {"IPAddress": "172.20.0.2"}
+    return {
+        "Id": container_id,
+        "Name": f"/{project}-{service}-1",
+        "Config": {
+            "Labels": {
+                "com.docker.compose.project": project,
+                "com.docker.compose.service": service,
+            }
+        },
+        "NetworkSettings": {"Networks": networks},
+    }
 
 
 @pytest.mark.parametrize(
-    ("occupant_name", "address", "expected"),
-    [
-        ("vless-agent-xray-1", "172.31.255.2/28", True),
-        ("vless-agent-agent-1", "172.31.255.3/28", True),
-        ("foreign", "172.31.255.2/28", False),
-        ("vless-agent-agent-1", "172.31.255.2/28", False),
-        ("foreign", "172.31.255.3/28", False),
-    ],
+    ("service", "address"),
+    [("xray", "172.31.255.2/28"), ("agent", "172.31.255.3/28")],
 )
-def test_network_preflight_checks_reserved_endpoint_ownership(
-    occupant_name: str, address: str, expected: bool
+def test_network_preflight_checks_reserved_endpoint_inspect_identity(
+    service: str, address: str
 ) -> None:
     validator = _load_role_filters()["vless_agent_network_preflight_safe"]
     network = _expected_network()
+    container_id = ("a" if service == "xray" else "b") * 64
     network["Containers"] = {
-        "container-id": {"Name": occupant_name, "IPv4Address": address}
+        container_id: {"Name": f"vless-agent-{service}-1", "IPv4Address": address}
     }
+    containers = [
+        _preflight_container(
+            container_id=container_id, service=service, address=address
+        )
+    ]
     addresses = [{"ifname": "br-abcdef012345", "addr_info": [{"family": "inet", "local": "172.31.255.1", "prefixlen": 28}]}]
     routes = [{"dst": MANAGEMENT_SUBNET, "dev": "br-abcdef012345"}]
 
-    assert validator(addresses, routes, [network], "vless-agent") is expected
+    assert validator(addresses, routes, [network], containers, "vless-agent")
+
+
+def test_network_preflight_rejects_similarly_named_foreign_reserved_occupant() -> None:
+    validator = _load_role_filters()["vless_agent_network_preflight_safe"]
+    network = _expected_network()
+    container_id = "c" * 64
+    network["Containers"] = {
+        container_id: {
+            "Name": "vless-agent-xray-1",
+            "IPv4Address": "172.31.255.2/28",
+        }
+    }
+    spoof = _preflight_container(
+        container_id=container_id,
+        service="xray",
+        address="172.31.255.2/28",
+        project="foreign",
+    )
+
+    assert not validator([], [], [network], [spoof], "vless-agent")
+
+
+@pytest.mark.parametrize(
+    "mutate",
+    [
+        lambda value: value["Config"]["Labels"].update(
+            {"com.docker.compose.service": "agent"}
+        ),
+        lambda value: value.update(Name="/vless-agent-xray-2"),
+        lambda value: value["NetworkSettings"]["Networks"].update(
+            {"vless-agent_management": {"IPAddress": "172.31.255.3"}}
+        ),
+        lambda value: value["NetworkSettings"]["Networks"].update(
+            {"foreign": {"IPAddress": "172.31.255.2"}}
+        ),
+    ],
+)
+def test_network_preflight_rejects_reserved_container_inspect_drift(
+    mutate: object,
+) -> None:
+    validator = _load_role_filters()["vless_agent_network_preflight_safe"]
+    network = _expected_network()
+    container_id = "d" * 64
+    network["Containers"] = {
+        container_id: {
+            "Name": "vless-agent-xray-1",
+            "IPv4Address": "172.31.255.2/28",
+        }
+    }
+    container = _preflight_container(
+        container_id=container_id, service="xray", address="172.31.255.2/28"
+    )
+    mutate(container)
+
+    assert not validator([], [], [network], [container], "vless-agent")
 
 
 @pytest.mark.parametrize(
@@ -509,7 +589,22 @@ def test_network_preflight_fails_closed_on_malformed_inspection_data(
 ) -> None:
     validator = _load_role_filters()["vless_agent_network_preflight_safe"]
 
-    assert not validator(addresses, routes, networks, "vless-agent")
+    assert not validator(addresses, routes, networks, [], "vless-agent")
+
+
+def test_network_preflight_fails_closed_on_missing_or_malformed_container_inspect() -> None:
+    validator = _load_role_filters()["vless_agent_network_preflight_safe"]
+    network = _expected_network()
+    network["Containers"] = {
+        "e" * 64: {
+            "Name": "vless-agent-xray-1",
+            "IPv4Address": "172.31.255.2/28",
+        }
+    }
+
+    assert not validator([], [], [network], [], "vless-agent")
+    assert not validator([], [], [network], [{}], "vless-agent")
+    assert not validator([], [], [], [{"Id": "f" * 64}], "vless-agent")
 
 
 def test_host_and_docker_network_preflight_runs_before_compose_start() -> None:
@@ -519,8 +614,11 @@ def test_host_and_docker_network_preflight_runs_before_compose_start() -> None:
 
     assert safety["no_log"] is True
     assert safety["ansible.builtin.assert"]["that"] == [
-        "vless_agent_host_ipv4_addresses | vless_agent_network_preflight_safe(vless_agent_host_ipv4_routes, vless_agent_docker_networks, vless_agent_compose_project_name)"
+        "vless_agent_host_ipv4_addresses | vless_agent_network_preflight_safe(vless_agent_host_ipv4_routes, vless_agent_docker_networks, vless_agent_existing_containers, vless_agent_compose_project_name)"
     ]
+    assert names.index("Inspect every existing Docker container") < names.index(
+        "Reject host or Docker management network conflicts"
+    )
     assert names.index("Reject host or Docker management network conflicts") < names.index(
         "Mark candidate Compose as possibly started"
     )
@@ -613,6 +711,10 @@ def test_runtime_topology_validator_accepts_exact_inspection_with_no_agent_bindi
     "mutate",
     [
         lambda network, xray, agent: network[0].update(Internal=False),
+        lambda network, xray, agent: network[0].update(Driver="macvlan"),
+        lambda network, xray, agent: network[0].update(
+            Options={"com.docker.network.bridge.name": "custom"}
+        ),
         lambda network, xray, agent: network[0]["IPAM"]["Config"][0].update(Gateway="172.31.255.4"),
         lambda network, xray, agent: xray[0]["NetworkSettings"]["Networks"]["vless-agent_management"].update(IPAddress="172.31.255.4"),
         lambda network, xray, agent: xray[0]["NetworkSettings"]["Networks"].pop("vless-agent_public"),

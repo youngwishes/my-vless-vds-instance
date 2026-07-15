@@ -149,7 +149,9 @@ def _expected_network_bridge(
     configs = ipam.get("Config")
     if (
         network.get("Name") != expected_name
+        or network.get("Driver") != "bridge"
         or network.get("Internal") is not True
+        or network.get("Options") != {}
         or labels.get("com.docker.compose.project") != expected_project
         or labels.get("com.docker.compose.network") != "management"
         or not isinstance(configs, list)
@@ -157,42 +159,97 @@ def _expected_network_bridge(
         != [{"Subnet": str(_MANAGEMENT_NETWORK), "Gateway": _MANAGEMENT_GATEWAY}]
     ):
         return None
-    options = network.get("Options", {})
-    if not isinstance(options, Mapping):
-        return None
-    explicit_name = options.get("com.docker.network.bridge.name")
-    if explicit_name is not None:
-        return explicit_name if isinstance(explicit_name, str) and explicit_name else None
     network_id = network.get("Id")
     if not isinstance(network_id, str) or not re.fullmatch(r"[0-9a-f]{12,}", network_id):
         return None
     return f"br-{network_id[:12]}"
 
 
+def _container_inspects_by_id(
+    container_inspects: object,
+) -> dict[str, Mapping[str, object]] | None:
+    if not isinstance(container_inspects, list):
+        return None
+    inspected_by_id: dict[str, Mapping[str, object]] = {}
+    for inspected in container_inspects:
+        if not isinstance(inspected, Mapping):
+            return None
+        container_id = inspected.get("Id")
+        config = inspected.get("Config")
+        settings = inspected.get("NetworkSettings")
+        if (
+            not isinstance(container_id, str)
+            or re.fullmatch(r"[0-9a-f]{64}", container_id) is None
+            or container_id in inspected_by_id
+            or not isinstance(inspected.get("Name"), str)
+            or not isinstance(config, Mapping)
+            or (
+                config.get("Labels") is not None
+                and not isinstance(config.get("Labels"), Mapping)
+            )
+            or not isinstance(settings, Mapping)
+            or not isinstance(settings.get("Networks"), Mapping)
+        ):
+            return None
+        inspected_by_id[container_id] = inspected
+    return inspected_by_id
+
+
 def _reserved_endpoints_safe(
-    network: Mapping[str, object], expected_project: str
+    network: Mapping[str, object],
+    inspected_by_id: Mapping[str, Mapping[str, object]],
+    expected_project: str,
 ) -> bool:
     containers = network.get("Containers")
     if not isinstance(containers, Mapping):
         return False
-    expected_names = {
-        _XRAY_ADDRESS: re.compile(rf"^{re.escape(expected_project)}-xray-[1-9][0-9]*$"),
-        _AGENT_ADDRESS: re.compile(rf"^{re.escape(expected_project)}-agent-[1-9][0-9]*$"),
+
+    expected_services = {
+        _XRAY_ADDRESS: "xray",
+        _AGENT_ADDRESS: "agent",
     }
-    for endpoint in containers.values():
-        if not isinstance(endpoint, Mapping):
+    seen_reserved: set[str] = set()
+    for container_id, endpoint in containers.items():
+        if not isinstance(container_id, str) or not isinstance(endpoint, Mapping):
             return False
-        name = endpoint.get("Name")
         address = endpoint.get("IPv4Address")
-        if not isinstance(name, str) or not isinstance(address, str):
+        if not isinstance(endpoint.get("Name"), str) or not isinstance(address, str):
             return False
         try:
             parsed = address.split("/", 1)[0]
             IPv4Address(parsed)
         except (AddressValueError, ValueError):
             return False
-        expected = expected_names.get(parsed)
-        if expected is not None and expected.fullmatch(name) is None:
+        service = expected_services.get(parsed)
+        if service is None:
+            continue
+        if parsed in seen_reserved:
+            return False
+        seen_reserved.add(parsed)
+        inspected = inspected_by_id.get(container_id)
+        if inspected is None:
+            return False
+        config = inspected.get("Config")
+        settings = inspected.get("NetworkSettings")
+        if not isinstance(config, Mapping) or not isinstance(settings, Mapping):
+            return False
+        labels = config.get("Labels")
+        memberships = settings.get("Networks")
+        expected_network = f"{expected_project}_management"
+        if not isinstance(labels, Mapping) or not isinstance(memberships, Mapping):
+            return False
+        membership = memberships.get(expected_network)
+        expected_memberships = {expected_network}
+        if service == "xray":
+            expected_memberships.add(f"{expected_project}_public")
+        if (
+            inspected.get("Name") != f"/{expected_project}-{service}-1"
+            or labels.get("com.docker.compose.project") != expected_project
+            or labels.get("com.docker.compose.service") != service
+            or set(memberships) != expected_memberships
+            or not isinstance(membership, Mapping)
+            or membership.get("IPAddress") != parsed
+        ):
             return False
     return True
 
@@ -201,15 +258,21 @@ def network_preflight_safe(
     addresses: object,
     routes: object,
     networks: object,
+    container_inspects: object,
     expected_project: object,
 ) -> bool:
     if (
         not isinstance(addresses, list)
         or not isinstance(routes, list)
         or not isinstance(networks, list)
+        or not isinstance(container_inspects, list)
         or not isinstance(expected_project, str)
         or not expected_project
     ):
+        return False
+
+    inspected_by_id = _container_inspects_by_id(container_inspects)
+    if inspected_by_id is None:
         return False
 
     expected_name = f"{expected_project}_management"
@@ -227,7 +290,9 @@ def network_preflight_safe(
             expected_network = network
             if _expected_network_bridge(network, expected_project) is None:
                 return False
-            if not _reserved_endpoints_safe(network, expected_project):
+            if not _reserved_endpoints_safe(
+                network, inspected_by_id, expected_project
+            ):
                 return False
         elif overlaps:
             return False

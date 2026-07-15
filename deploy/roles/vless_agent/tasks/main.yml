@@ -512,6 +512,29 @@
       when: vless_agent_docker_network_ids.stdout_lines | length > 0
       no_log: true
 
+    - name: List every existing Docker container
+      ansible.builtin.command:
+        argv: [docker, container, ls, --all, --quiet, --no-trunc]
+      register: vless_agent_existing_container_ids
+      changed_when: false
+      no_log: true
+
+    - name: Require canonical existing container identifiers
+      ansible.builtin.assert:
+        that:
+          - item is match('^[0-9a-f]{64}$')
+        fail_msg: Docker container listing returned malformed inspection data
+      loop: "{{ vless_agent_existing_container_ids.stdout_lines }}"
+      no_log: true
+
+    - name: Inspect every existing Docker container
+      ansible.builtin.command:
+        argv: "{{ ['docker', 'container', 'inspect'] + vless_agent_existing_container_ids.stdout_lines }}"
+      register: vless_agent_existing_containers_json
+      changed_when: false
+      when: vless_agent_existing_container_ids.stdout_lines | length > 0
+      no_log: true
+
     - name: Parse host and Docker network inspection privately
       ansible.builtin.set_fact:
         vless_agent_host_ipv4_addresses: "{{ vless_agent_host_ipv4_addresses_json.stdout | from_json }}"
@@ -520,12 +543,16 @@
           {{ (vless_agent_docker_networks_json.stdout | from_json)
              if vless_agent_docker_network_ids.stdout_lines | length > 0
              else [] }}
+        vless_agent_existing_containers: >-
+          {{ (vless_agent_existing_containers_json.stdout | from_json)
+             if vless_agent_existing_container_ids.stdout_lines | length > 0
+             else [] }}
       no_log: true
 
     - name: Reject host or Docker management network conflicts
       ansible.builtin.assert:
         that:
-          - vless_agent_host_ipv4_addresses | vless_agent_network_preflight_safe(vless_agent_host_ipv4_routes, vless_agent_docker_networks, vless_agent_compose_project_name)
+          - vless_agent_host_ipv4_addresses | vless_agent_network_preflight_safe(vless_agent_host_ipv4_routes, vless_agent_docker_networks, vless_agent_existing_containers, vless_agent_compose_project_name)
         fail_msg: Refusing to start Compose because the reserved management network overlaps or has drifted
       no_log: true
 
