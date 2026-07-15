@@ -27,6 +27,7 @@ _DEFAULT_COMPATIBILITY_PATH = Path(__file__).resolve().parents[1] / "docs/COMPAT
 
 _TOP_LEVEL_KEYS = {
     "candidate_sha",
+    "ci_sha",
     "reviewed_sha",
     "test_deployed_sha",
     "review_verdict",
@@ -185,7 +186,7 @@ def validate_release_evidence(
     document = _object(evidence, path="evidence")
     _exact_keys(document, _TOP_LEVEL_KEYS)
 
-    for field in ("candidate_sha", "reviewed_sha", "test_deployed_sha"):
+    for field in ("candidate_sha", "ci_sha", "reviewed_sha", "test_deployed_sha"):
         _sha(document[field], path=field, expected_head=expected_head)
     _exact(document["review_verdict"], "approved", path="review_verdict")
 

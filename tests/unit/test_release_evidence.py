@@ -17,6 +17,7 @@ ROLLBACK_SHA = "564dc521016cc7463f7e7870ceb159b60883cccb"
 def valid_evidence() -> dict[str, object]:
     return {
         "candidate_sha": HEAD,
+        "ci_sha": HEAD,
         "reviewed_sha": HEAD,
         "test_deployed_sha": HEAD,
         "review_verdict": "approved",
@@ -60,6 +61,9 @@ def test_accepts_complete_evidence_for_exact_expected_head() -> None:
     ("mutation", "path", "reason"),
     [
         (lambda value: value.pop("reviewed_sha"), "reviewed_sha", "missing"),
+        (lambda value: value.pop("ci_sha"), "ci_sha", "missing"),
+        (lambda value: value.__setitem__("ci_sha", "main"), "ci_sha", "format"),
+        (lambda value: value.__setitem__("ci_sha", "2" * 40), "ci_sha", "mismatch"),
         (lambda value: value.__setitem__("notes", "safe-looking"), "evidence", "unknown"),
         (lambda value: value.__setitem__("candidate_sha", "main"), "candidate_sha", "format"),
         (lambda value: value.__setitem__("reviewed_sha", "A" * 40), "reviewed_sha", "format"),

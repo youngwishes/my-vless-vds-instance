@@ -15,6 +15,7 @@ must not exceed 64 KiB.
 ```json
 {
   "candidate_sha": "<exact-lowercase-40-hex-sha>",
+  "ci_sha": "<same-exact-sha>",
   "reviewed_sha": "<same-exact-sha>",
   "test_deployed_sha": "<same-exact-sha>",
   "review_verdict": "approved",
@@ -85,10 +86,11 @@ uv run python -m src.release_evidence \
 ```
 
 Exit zero means only that this report is structurally complete and bound to the
-current exact HEAD. Any tracked change after review or test deployment creates a
-new candidate SHA and invalidates both pieces of evidence; repeat review, test
-deployment, smoke, and validation for the new SHA. Never edit a filled report to
-carry results forward.
+current exact HEAD. `ci_sha` is the exact checked-out revision derived by CI
+with `git rev-parse HEAD`, not a floating event or merge ref. Any tracked change
+after CI, review, or test deployment creates a new candidate SHA and invalidates
+that evidence; repeat CI, review, test deployment, smoke, and validation for the
+new SHA. Never edit a filled report to carry results forward.
 
 Validator success does **not** authorize production deployment. Immediately
 before production, follow `DEPLOY.md` and obtain fresh explicit user approval

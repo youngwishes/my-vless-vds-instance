@@ -66,7 +66,7 @@ def test_ci_scopes_dummy_interpolation_environment_only_to_compose_steps() -> No
     assert "env" not in steps["Syntax-check test deployment"]
     assert "env" not in steps["Syntax-check production deployment"]
     assert steps["Validate production Compose"]["env"] == {
-        "AGENT_SHA": "${{ github.sha }}",
+        "AGENT_SHA": "${{ steps.candidate.outputs.sha }}",
         "AGENT_TOKEN_CURRENT": "ci-dummy-token-not-a-credential-0001",
         "REALITY_PRIVATE_KEY_FILE": "/tmp/ci-dummy-reality-private-key",
     }
@@ -74,3 +74,30 @@ def test_ci_scopes_dummy_interpolation_environment_only_to_compose_steps() -> No
         "AGENT_TOKEN_CURRENT": "ci-dummy-token-not-a-credential-0001",
         "REALITY_PRIVATE_KEY_FILE": "/tmp/ci-dummy-reality-private-key",
     }
+
+
+def test_ci_checks_out_and_consumes_one_exact_candidate_revision() -> None:
+    text, workflow = _workflow()
+    steps = workflow["jobs"]["verify"]["steps"]
+    by_name = {step["name"]: step for step in steps}
+
+    assert by_name["Check out the exact revision"]["with"] == {
+        "persist-credentials": False,
+        "ref": "${{ github.event.pull_request.head.sha || github.sha }}",
+    }
+    assert by_name["Derive checked-out candidate SHA"] == {
+        "name": "Derive checked-out candidate SHA",
+        "id": "candidate",
+        "run": "printf 'sha=%s\\n' \"$(git rev-parse HEAD)\" >> \"$GITHUB_OUTPUT\"",
+    }
+    assert by_name["Validate production Compose"]["env"]["AGENT_SHA"] == (
+        "${{ steps.candidate.outputs.sha }}"
+    )
+    assert 'deploy_revision="${{ steps.candidate.outputs.sha }}"' in by_name[
+        "Syntax-check test deployment"
+    ]["run"]
+    assert 'deploy_revision="${{ steps.candidate.outputs.sha }}"' in by_name[
+        "Syntax-check production deployment"
+    ]["run"]
+    assert "$GITHUB_SHA" not in text
+    assert text.count("github.sha") == 1

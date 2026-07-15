@@ -54,10 +54,10 @@ considering production.
 
 After review and the complete test-node smoke, create the external closed report
 described in `RELEASE_EVIDENCE.md`. Validate it against the exact current HEAD;
-the candidate, reviewed, test-deployed, deployed-agent, and health-agent SHAs
-must be identical. The report is not stored in Git. Any tracked change after
-review or test deployment invalidates that evidence and requires a new review,
-test deployment, smoke, and report for the new SHA.
+the candidate, CI, reviewed, test-deployed, deployed-agent, and health-agent
+SHAs must be identical. The report is not stored in Git. Any tracked change
+after CI, review, or test deployment invalidates that evidence and requires new
+CI, review, test deployment, smoke, and report for the new SHA.
 
 The host firewall has one narrow loopback-interface exception for management
 health requests originating on the node itself. It matches `-i lo`, not a source
