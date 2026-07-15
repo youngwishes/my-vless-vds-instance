@@ -588,6 +588,13 @@ def test_nginx_listener_parser_ignores_comments_and_rejects_extra_listeners() ->
     assert parser("listen 0.0.0.0:8443 ssl;\nlisten\n  80;\n") != [
         "0.0.0.0:8443 ssl"
     ]
+    inline = """
+    # server { listen 81; }
+    log_format decoy "server { listen 82; }";
+    set $quoted 'listen 83;';
+    server {\tlisten 80; listen\n  0.0.0.0:8443\tssl; }
+    """
+    assert parser(inline) == ["80", "0.0.0.0:8443 ssl"]
 
 
 def test_previous_compose_state_requires_running_agent_and_xray() -> None:
@@ -728,8 +735,8 @@ def test_rollback_captures_and_restores_prior_configuration_without_current_vars
     assert names.index("Reload restored nginx configuration") < names.index(
         "Restart compatible previous revision using the same snapshot volume"
     )
-    assert task_by_name["Remove candidate nginx virtual host on first install"]["ansible.builtin.file"]["state"] == "absent"
-    assert names.index("Remove candidate nginx virtual host on first install") < names.index(
+    assert task_by_name["Remove candidate nginx configuration without prior artifact"]["ansible.builtin.file"]["state"] == "absent"
+    assert names.index("Remove candidate nginx configuration without prior artifact") < names.index(
         "Explain first-install or incompatible rollback refusal"
     )
     rollback_health = task_by_name["Verify rolled back HTTPS health"]["ansible.builtin.uri"]
@@ -739,6 +746,68 @@ def test_rollback_captures_and_restores_prior_configuration_without_current_vars
     assert rollback_health["headers"]["Authorization"] == (
         "Bearer {{ vless_previous_agent_token_current }}"
     )
+
+
+def test_no_compatible_rollback_cleanup_is_flagged_fail_closed_and_volume_safe() -> None:
+    tasks = _walk_tasks(_yaml(ROLE / "tasks" / "main.yml"))
+    names = [task.get("name") for task in tasks]
+    by_name = {task.get("name"): task for task in tasks}
+
+    initialize = by_name["Initialize candidate mutation flags"]
+    assert initialize["ansible.builtin.set_fact"] == {
+        "vless_candidate_compose_may_have_started": False,
+        "vless_candidate_nginx_may_have_loaded": False,
+    }
+    assert names.index("Initialize candidate mutation flags") < names.index(
+        "Render node REALITY key file"
+    )
+    assert names.index("Mark candidate Compose as possibly started") + 1 == names.index(
+        "Replace services while preserving named snapshot volume"
+    )
+    assert names.index("Mark candidate nginx as possibly loaded") + 1 == names.index(
+        "Start nginx after firewall is active"
+    )
+
+    stop_compose = by_name["Stop candidate Compose project containers without deleting volumes"]
+    stop_nginx = by_name["Stop nginx when candidate configuration may have loaded"]
+    assert stop_compose["when"] == [
+        "not vless_agent_can_rollback",
+        "vless_candidate_compose_may_have_started",
+    ]
+    assert stop_compose["no_log"] is True
+    cleanup_script = stop_compose["ansible.builtin.shell"]
+    assert "label=com.docker.compose.project={{ vless_agent_compose_project_name }}" in cleanup_script
+    assert "docker stop" in cleanup_script
+    assert "docker compose" not in cleanup_script
+    assert stop_nginx["when"] == [
+        "not vless_agent_can_rollback",
+        "vless_candidate_nginx_may_have_loaded",
+    ]
+    assert stop_nginx["ansible.builtin.service"]["state"] == "stopped"
+
+    for name, previous_stat in (
+        ("Restore captured agent environment without compatible rollback", "vless_previous_agent_env_stat.exists"),
+        ("Restore captured REALITY key without compatible rollback", "vless_previous_reality_key_stat.exists"),
+        ("Restore captured nginx configuration without compatible rollback", "vless_previous_nginx_stat.exists"),
+    ):
+        task = by_name[name]
+        assert task["when"] == ["not vless_agent_can_rollback", previous_stat]
+        assert task["no_log"] is True
+
+    remove_nginx = by_name["Remove candidate nginx configuration without prior artifact"]
+    assert remove_nginx["when"] == [
+        "not vless_agent_can_rollback",
+        "not vless_previous_nginx_stat.exists",
+    ]
+    failure_index = names.index("Explain first-install or incompatible rollback refusal")
+    assert names.index("Stop candidate Compose project containers without deleting volumes") < failure_index
+    assert names.index("Stop nginx when candidate configuration may have loaded") < failure_index
+    assert names.index("Restore captured agent environment without compatible rollback") < failure_index
+
+    role_text = _read(ROLE / "tasks" / "main.yml")
+    assert "down -v" not in role_text
+    assert "docker volume rm" not in role_text
+    assert "volume prune" not in role_text
 
 
 def test_documentation_covers_safe_rollout_recovery_rotation_and_approval() -> None:
@@ -794,6 +863,11 @@ def test_deploy_docs_cover_port_migration_hostwide_nginx_and_exact_rollback_scop
     assert "previous compose project was running" in deploy_doc
     assert "first install removes the candidate nginx" in deploy_doc
     assert "packaged enabled symlink" in deploy_doc
+    assert "project-labeled candidate containers" in deploy_doc
+    assert "without deleting volumes" in deploy_doc
+    assert "early failure before either candidate flag" in deploy_doc
+    assert "does not stop the healthy prior runtime or nginx" in deploy_doc
+    assert "never checks out or starts an undeclared previous sha" in deploy_doc
 
 
 def test_deploy_artifacts_contain_no_unsafe_secret_or_mutable_runtime() -> None:

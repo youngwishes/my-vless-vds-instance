@@ -119,6 +119,15 @@ reuses the named snapshot volume, restarts the prior SHA, and verifies
 authenticated HTTPS health with the prior domain, port and token. The play still
 fails for operator review after a successful rollback.
 
+If compatible rollback is unavailable, explicit mutation flags drive fail-closed
+cleanup. An early failure before either candidate flag does not stop the healthy
+prior runtime or nginx. Once Compose may have started, the role stops all
+project-labeled candidate containers without deleting volumes; once candidate
+nginx may have loaded, it stops nginx. It restores each captured prior env, key
+or nginx artifact that exists, otherwise removes the candidate nginx file, then
+fails the play. This cleanup never checks out or starts an undeclared previous
+SHA.
+
 A first install removes the candidate nginx virtual host after failure and has
 no invented rollback. An absent or incompatible previous SHA, a previously
 stopped Compose project, or incomplete/unsafe prior configuration also stops

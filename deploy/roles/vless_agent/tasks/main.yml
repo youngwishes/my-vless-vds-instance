@@ -406,6 +406,11 @@
   loop: "{{ (vless_agent_snapshot_backups.files | sort(attribute='mtime', reverse=true))[vless_agent_snapshot_backup_retention | int:] }}"
   no_log: true
 
+- name: Initialize candidate mutation flags
+  ansible.builtin.set_fact:
+    vless_candidate_compose_may_have_started: false
+    vless_candidate_nginx_may_have_loaded: false
+
 - name: Deploy exact revision with compatible automatic rollback
   block:
     - name: Checkout only the requested exact revision
@@ -473,6 +478,10 @@
         fail_msg: Rendered Compose must retain exact Xray digest, loopback API, and snapshot volume
       no_log: true
 
+    - name: Mark candidate Compose as possibly started
+      ansible.builtin.set_fact:
+        vless_candidate_compose_may_have_started: true
+
     - name: Replace services while preserving named snapshot volume
       ansible.builtin.command:
         argv: [docker, compose, -p, "{{ vless_agent_compose_project_name }}", --env-file, "{{ vless_agent_env_path }}", -f, docker-compose.yml, up, -d, --build, --remove-orphans]
@@ -511,6 +520,10 @@
           - vless_agent_effective_nginx_listeners == ['0.0.0.0:' ~ (vless_agent_management_port | string) ~ ' ssl']
         fail_msg: Effective nginx configuration must contain only the managed IPv4 TLS listener
       no_log: true
+
+    - name: Mark candidate nginx as possibly loaded
+      ansible.builtin.set_fact:
+        vless_candidate_nginx_may_have_loaded: true
 
     - name: Start nginx after firewall is active
       ansible.builtin.service:
@@ -565,11 +578,71 @@
              vless_previous_compose_was_running }}
       no_log: true
 
-    - name: Remove candidate nginx virtual host on first install
+    - name: Stop candidate Compose project containers without deleting volumes
+      ansible.builtin.shell: |
+        set -eu
+        container_ids="$(docker ps -q --filter 'label=com.docker.compose.project={{ vless_agent_compose_project_name }}')"
+        if [ -n "$container_ids" ]; then
+          docker stop $container_ids >/dev/null
+        fi
+      args:
+        executable: /bin/bash
+      when:
+        - not vless_agent_can_rollback
+        - vless_candidate_compose_may_have_started
+      no_log: true
+
+    - name: Stop nginx when candidate configuration may have loaded
+      ansible.builtin.service:
+        name: nginx
+        state: stopped
+      when:
+        - not vless_agent_can_rollback
+        - vless_candidate_nginx_may_have_loaded
+
+    - name: Restore captured agent environment without compatible rollback
+      ansible.builtin.copy:
+        content: "{{ vless_previous_agent_env.content | b64decode }}"
+        dest: "{{ vless_agent_env_path }}"
+        owner: root
+        group: root
+        mode: "0600"
+      when:
+        - not vless_agent_can_rollback
+        - vless_previous_agent_env_stat.exists
+      no_log: true
+
+    - name: Restore captured REALITY key without compatible rollback
+      ansible.builtin.copy:
+        content: "{{ vless_previous_reality_key.content | b64decode }}"
+        dest: "{{ vless_agent_reality_key_path }}"
+        owner: "65532"
+        group: "65532"
+        mode: "0600"
+      when:
+        - not vless_agent_can_rollback
+        - vless_previous_reality_key_stat.exists
+      no_log: true
+
+    - name: Restore captured nginx configuration without compatible rollback
+      ansible.builtin.copy:
+        content: "{{ vless_previous_nginx_config.content | b64decode }}"
+        dest: "{{ vless_agent_nginx_config_path }}"
+        owner: root
+        group: root
+        mode: "0644"
+      when:
+        - not vless_agent_can_rollback
+        - vless_previous_nginx_stat.exists
+      no_log: true
+
+    - name: Remove candidate nginx configuration without prior artifact
       ansible.builtin.file:
         path: "{{ vless_agent_nginx_config_path }}"
         state: absent
-      when: not vless_previous_nginx_stat.exists
+      when:
+        - not vless_agent_can_rollback
+        - not vless_previous_nginx_stat.exists
 
     - name: Explain first-install or incompatible rollback refusal
       ansible.builtin.fail:

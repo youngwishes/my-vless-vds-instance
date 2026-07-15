@@ -69,13 +69,43 @@ def has_durable_snapshot_volume(value: object, expected_name: object) -> bool:
 def nginx_listeners(value: object) -> list[str]:
     if not isinstance(value, str):
         return []
-    uncommented: list[str] = []
-    for raw_line in value.splitlines():
-        uncommented.append(raw_line.split("#", 1)[0])
-    return [
-        " ".join(match.group(1).split())
-        for match in re.finditer(r"(?m)^\s*listen\s+([^;]+);", "\n".join(uncommented))
-    ]
+    sanitized: list[str] = []
+    quote: str | None = None
+    escaped = False
+    comment = False
+    for character in value:
+        if comment:
+            if character == "\n":
+                comment = False
+                sanitized.append(character)
+            else:
+                sanitized.append(" ")
+            continue
+        if quote is not None:
+            if escaped:
+                escaped = False
+            elif character == "\\":
+                escaped = True
+            elif character == quote:
+                quote = None
+            sanitized.append("\n" if character == "\n" else " ")
+            continue
+        if character == "#":
+            comment = True
+            sanitized.append(" ")
+        elif character in ("'", '"'):
+            quote = character
+            sanitized.append(" ")
+        else:
+            sanitized.append(character)
+    listeners: list[str] = []
+    pattern = re.compile(
+        r"(?m)(?=(?:^[ \t]*listen\s+([^;{}]+);|[;{}]\s*listen\s+([^;{}]+);))"
+    )
+    for match in pattern.finditer("".join(sanitized)):
+        directive = match.group(1) if match.group(1) is not None else match.group(2)
+        listeners.append(" ".join(directive.split()))
+    return listeners
 
 
 def compose_runtime_was_running(value: object) -> bool:
