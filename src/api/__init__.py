@@ -1,5 +1,19 @@
 """HTTP API boundaries."""
 
-from src.api.schemas import AccessDTO, SafeErrorDTO, SnapshotDTO
+from src.api.schemas import (
+    AccessDTO,
+    AppliedSnapshotDTO,
+    ApplyResultDTO,
+    HealthDTO,
+    SafeErrorDTO,
+    SnapshotDTO,
+)
 
-__all__ = ("AccessDTO", "SafeErrorDTO", "SnapshotDTO")
+__all__ = (
+    "AccessDTO",
+    "AppliedSnapshotDTO",
+    "ApplyResultDTO",
+    "HealthDTO",
+    "SafeErrorDTO",
+    "SnapshotDTO",
+)

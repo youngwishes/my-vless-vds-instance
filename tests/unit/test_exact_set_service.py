@@ -16,6 +16,7 @@ from src.xray import (
     XrayUser,
     VLESS_VISION_FLOW,
     access_email,
+    ExactSetMatchesService,
 )
 
 
@@ -156,6 +157,28 @@ def test_repeated_exact_set_is_a_no_op() -> None:
         call.get_inbound_users(tag=MANAGED_TAG),
         call.get_inbound_users(tag=MANAGED_TAG),
     ]
+
+
+def test_read_only_exact_set_probe_detects_extra_missing_or_changed_users() -> None:
+    uuid = "01890f47-a2d4-7c11-b3e6-89f40d8639f1"
+    access = _access(2, uuid)
+    client = Mock()
+    probe = ExactSetMatchesService(client=client, managed_inbound_tag=MANAGED_TAG)
+    matching = XrayUser(
+        email=access_email(2), uuid=uuid, flow=VLESS_VISION_FLOW
+    )
+
+    client.get_inbound_users.return_value = (matching,)
+    assert probe(accesses=(access,)) is True
+    client.get_inbound_users.return_value = ()
+    assert probe(accesses=(access,)) is False
+    client.get_inbound_users.return_value = (
+        matching,
+        XrayUser(email="unmanaged@example", uuid=uuid, flow=VLESS_VISION_FLOW),
+    )
+    assert probe(accesses=(access,)) is False
+
+    assert all(call_item[0] == "get_inbound_users" for call_item in client.mock_calls)
 
 
 def test_never_mutates_any_tag_other_than_configured_managed_inbound() -> None:

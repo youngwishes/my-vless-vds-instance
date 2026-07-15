@@ -233,4 +233,8 @@ def test_public_routes_contain_no_incremental_mutation_endpoint() -> None:
     }
     application_routes = all_routes - framework_routes
 
-    assert application_routes == set()
+    assert application_routes == {
+        ("/api/v1/health", "GET"),
+        ("/api/v1/snapshot", "GET"),
+        ("/api/v1/snapshot", "PUT"),
+    }

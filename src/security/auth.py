@@ -8,7 +8,7 @@ from fastapi.responses import JSONResponse
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 
 
-_bearer_scheme = HTTPBearer(auto_error=False)
+_bearer_scheme = HTTPBearer(auto_error=False, scheme_name="bearerAuth")
 
 
 class BearerAuthenticationError(Exception):

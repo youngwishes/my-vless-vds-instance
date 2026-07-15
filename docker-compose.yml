@@ -9,6 +9,13 @@ services:
       AGENT_TOKEN_NEXT:
       ENVIRONMENT_MODE: production
       VLESS_NODE_ID: ${VLESS_NODE_ID:-}
+      AGENT_SHA: ${AGENT_SHA:?AGENT_SHA must be set}
+      XRAY_VERSION: ${XRAY_VERSION:?XRAY_VERSION must be set}
+      XRAY_IMAGE_DIGEST: ${XRAY_IMAGE_DIGEST:?XRAY_IMAGE_DIGEST must be set}
+      XRAY_API_TARGET: ${XRAY_API_TARGET:-127.0.0.1:10085}
+      XRAY_API_TIMEOUT_SECONDS: ${XRAY_API_TIMEOUT_SECONDS:-5}
+      XRAY_MANAGED_INBOUND_TAG: ${XRAY_MANAGED_INBOUND_TAG:-vless-managed}
+      SNAPSHOT_PATH: /var/lib/vless-agent/snapshot.json
     ports:
       - "127.0.0.1:${VLESS_AGENT_PORT:-8000}:8000"
     read_only: true
@@ -17,3 +24,8 @@ services:
       - no-new-privileges:true
     tmpfs:
       - /tmp
+    volumes:
+      - agent-snapshot:/var/lib/vless-agent
+
+volumes:
+  agent-snapshot:

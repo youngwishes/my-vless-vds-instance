@@ -3,6 +3,7 @@
 from src.xray.client import GrpcXrayClient, XrayClient
 from src.xray.dtos import VLESS_VISION_FLOW, XrayUser, access_email
 from src.xray.exact_set_service import ApplyExactSetService, create_apply_exact_set_service
+from src.xray.exact_set_probe import ExactSetMatchesService
 from src.xray.exceptions import (
     XrayError,
     XrayProtocolError,
@@ -12,6 +13,7 @@ from src.xray.exceptions import (
 
 __all__ = (
     "ApplyExactSetService",
+    "ExactSetMatchesService",
     "GrpcXrayClient",
     "XrayClient",
     "XrayError",

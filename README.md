@@ -110,6 +110,22 @@ On startup, a missing snapshot is a clean first boot and the agent stays not
 ready. A valid durable snapshot is validated and reapplied to Xray, after which
 the agent is only `recovery-ready`; central health and reconcile must still
 confirm the current desired snapshot before the node can serve subscriptions.
+
+## Contract v1 management API
+
+The authenticated management surface contains only `GET /api/v1/health`,
+`GET /api/v1/snapshot`, and `PUT /api/v1/snapshot`. Every request requires both
+the node bearer token and `X-Agent-Contract-Version: v1`. Snapshot reads return
+revision/hash metadata only; UUIDs are never returned. Exact snapshot PUTs are
+serialized, enforce canonical v1 limits and monotonic revisions, and persist
+through the durable snapshot service before reporting success.
+
+Startup restore yields `RECOVERY_READY`, never `READY`. Only backend
+confirmation of the same revision/hash can promote the node, and only when a
+read-only exact-set Xray probe finds no drift. Health may demote readiness but
+does not repair Xray. Operational Xray/storage failures use the framework's
+generic unadvertised HTTP 500 fallback because contract v1 defines no stable
+operational error response; exception details are not returned.
 Torn JSON, an invalid hash/schema/order, a symlink or non-regular file, or any
 mode other than `0600` blocks recovery and readiness without changing Xray.
 

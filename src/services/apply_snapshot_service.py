@@ -49,6 +49,7 @@ class RecoveryState:
     snapshot_revision: int | None = None
     snapshot_hash: str | None = None
     serving_ready: bool = False
+    snapshot: SnapshotDTO | None = None
 
 
 @final
@@ -97,6 +98,7 @@ class StartupRestoreService:
             status=RecoveryStatus.RECOVERY_READY,
             snapshot_revision=validated.snapshot_revision,
             snapshot_hash=validated.snapshot_hash,
+            snapshot=validated,
         )
 
 
