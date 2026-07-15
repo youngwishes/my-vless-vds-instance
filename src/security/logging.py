@@ -2,7 +2,8 @@ from __future__ import annotations
 
 import logging
 import re
-from collections.abc import Callable, Mapping
+from collections.abc import Mapping
+from functools import wraps
 from typing import Any
 
 
@@ -29,18 +30,48 @@ def redact_log_text(value: str) -> str:
     return _BEARER_CREDENTIAL.sub(f"Bearer {REDACTED}", value)
 
 
+def _normalized_key(key: object | None) -> str:
+    if isinstance(key, bytes):
+        return key.decode("latin-1").lower().replace("-", "_")
+    return str(key).lower().replace("-", "_") if key is not None else ""
+
+
+def _redacted_like(value: object) -> object:
+    if isinstance(value, bytes):
+        return REDACTED.encode("ascii")
+    if isinstance(value, bytearray):
+        return bytearray(REDACTED, "ascii")
+    return REDACTED
+
+
 def _redact_log_value(value: Any, *, key: object | None = None) -> Any:
-    normalized_key = str(key).lower().replace("-", "_") if key is not None else ""
+    normalized_key = _normalized_key(key)
     if normalized_key in {"authorization", "authorization_header"}:
-        return REDACTED
+        return _redacted_like(value)
     if isinstance(value, str):
         return redact_log_text(value)
+    if isinstance(value, bytes):
+        return redact_log_text(value.decode("latin-1")).encode("latin-1")
+    if isinstance(value, bytearray):
+        redacted = redact_log_text(value.decode("latin-1"))
+        return bytearray(redacted, "latin-1")
     if isinstance(value, Mapping):
-        return {
-            item_key: _redact_log_value(item_value, key=item_key)
+        items = [
+            (item_key, _redact_log_value(item_value, key=item_key))
             for item_key, item_value in value.items()
-        }
+        ]
+        if type(value) is dict:
+            return dict(items)
+        try:
+            return type(value)(items)
+        except (TypeError, ValueError):
+            return dict(items)
     if isinstance(value, tuple):
+        if len(value) == 2 and _normalized_key(value[0]) in {
+            "authorization",
+            "authorization_header",
+        }:
+            return (value[0], _redacted_like(value[1]))
         return tuple(_redact_log_value(item) for item in value)
     if isinstance(value, list):
         return [_redact_log_value(item) for item in value]
@@ -65,40 +96,25 @@ class BearerCredentialRedactionFilter(logging.Filter):
         return True
 
 
-LogRecordFactory = Callable[..., logging.LogRecord]
-
-
 def install_logging_redaction() -> None:
-    for logger in _configured_loggers():
-        for handler in logger.handlers:
-            if not any(
-                isinstance(item, BearerCredentialRedactionFilter)
-                for item in handler.filters
-            ):
-                handler.addFilter(BearerCredentialRedactionFilter())
-
-    current_factory: LogRecordFactory = logging.getLogRecordFactory()
-    if getattr(current_factory, "_vless_bearer_redaction", False):
+    current_make_record = logging.Logger.makeRecord
+    if getattr(current_make_record, "_vless_bearer_redaction", False):
         return
 
     redaction_filter = BearerCredentialRedactionFilter()
 
-    def redacting_factory(*args: Any, **kwargs: Any) -> logging.LogRecord:
-        record = current_factory(*args, **kwargs)
+    @wraps(current_make_record)
+    def redacting_make_record(
+        logger: logging.Logger,
+        *args: Any,
+        **kwargs: Any,
+    ) -> logging.LogRecord:
+        record = current_make_record(logger, *args, **kwargs)
         redaction_filter.filter(record)
         return record
 
-    redacting_factory._vless_bearer_redaction = True  # type: ignore[attr-defined]
-    logging.setLogRecordFactory(redacting_factory)
-
-
-def _configured_loggers() -> tuple[logging.Logger, ...]:
-    named_loggers = tuple(
-        logger
-        for logger in logging.Logger.manager.loggerDict.values()
-        if isinstance(logger, logging.Logger)
-    )
-    return (logging.getLogger(), *named_loggers)
+    redacting_make_record._vless_bearer_redaction = True  # type: ignore[attr-defined]
+    logging.Logger.makeRecord = redacting_make_record  # type: ignore[method-assign]
 
 
 __all__ = (

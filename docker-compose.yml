@@ -5,6 +5,8 @@ services:
     cap_drop:
       - ALL
     environment:
+      AGENT_TOKEN_CURRENT: ${AGENT_TOKEN_CURRENT:?AGENT_TOKEN_CURRENT must be set}
+      AGENT_TOKEN_NEXT:
       ENVIRONMENT_MODE: production
       VLESS_NODE_ID: ${VLESS_NODE_ID:-}
     ports:

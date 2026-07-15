@@ -12,6 +12,8 @@ services:
       - "8000"
       - --reload
     environment:
+      AGENT_TOKEN_CURRENT: ${AGENT_TOKEN_CURRENT:?AGENT_TOKEN_CURRENT must be set}
+      AGENT_TOKEN_NEXT:
       ENVIRONMENT_MODE: local
       VLESS_NODE_ID: ${VLESS_NODE_ID:-local-node}
     ports:

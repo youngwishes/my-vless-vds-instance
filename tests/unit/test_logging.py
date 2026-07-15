@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+from io import StringIO
 
 from src.app import create_app
 from src.config import EnvironmentMode, Settings
@@ -81,6 +82,92 @@ def test_installed_filter_redacts_post_extra_authorization_and_nested_headers(
         assert "visible" in caplog.text
     finally:
         caplog.handler.setFormatter(previous_formatter)
+
+
+def test_installed_redaction_protects_handler_attached_after_app_creation() -> None:
+    create_app(
+        settings=Settings(
+            vless_node_id="node-01",
+            environment_mode=EnvironmentMode.TEST,
+            agent_token_current="explicit-test-token",
+        )
+    )
+    output = StringIO()
+    handler = logging.StreamHandler(output)
+    handler.setFormatter(logging.Formatter("%(message)s %(authorization)s"))
+    logger = logging.getLogger("agent.late-handler")
+    previous_level = logger.level
+    previous_propagate = logger.propagate
+    logger.setLevel(logging.INFO)
+    logger.propagate = False
+    logger.addHandler(handler)
+    try:
+        logger.info(
+            "request rejected",
+            extra={"authorization": f"Bearer {TOKEN}"},
+        )
+    finally:
+        logger.removeHandler(handler)
+        logger.setLevel(previous_level)
+        logger.propagate = previous_propagate
+
+    assert TOKEN not in output.getvalue()
+    assert "[REDACTED]" in output.getvalue()
+
+
+def test_installed_redaction_handles_asgi_bytes_headers_after_extra_merge() -> None:
+    create_app(
+        settings=Settings(
+            vless_node_id="node-01",
+            environment_mode=EnvironmentMode.TEST,
+            agent_token_current="explicit-test-token",
+        )
+    )
+    output = StringIO()
+    handler = logging.StreamHandler(output)
+    handler.setFormatter(logging.Formatter("%(scope)s"))
+    logger = logging.getLogger("agent.asgi")
+    previous_level = logger.level
+    previous_propagate = logger.propagate
+    logger.setLevel(logging.INFO)
+    logger.propagate = False
+    logger.addHandler(handler)
+    try:
+        logger.info(
+            "request rejected",
+            extra={
+                "scope": {
+                    b"headers": [
+                        (b"authorization", f"Bearer {TOKEN}".encode()),
+                        (b"x-safe", b"visible"),
+                    ],
+                    b"authorization": f"Bearer {TOKEN}".encode(),
+                }
+            },
+        )
+    finally:
+        logger.removeHandler(handler)
+        logger.setLevel(previous_level)
+        logger.propagate = previous_propagate
+
+    rendered = output.getvalue()
+    assert TOKEN not in rendered
+    assert rendered.count("[REDACTED]") == 2
+    assert "visible" in rendered
+
+
+def test_logging_redaction_installation_is_idempotent() -> None:
+    settings = Settings(
+        vless_node_id="node-01",
+        environment_mode=EnvironmentMode.TEST,
+        agent_token_current="explicit-test-token",
+    )
+    create_app(settings=settings)
+    installed_make_record = logging.Logger.makeRecord
+
+    create_app(settings=settings)
+
+    assert logging.Logger.makeRecord is installed_make_record
 
 
 def test_redaction_filter_scrubs_structured_authorization_field() -> None:

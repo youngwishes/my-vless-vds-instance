@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 from dataclasses import dataclass
+from pathlib import Path
 from unittest.mock import patch
 
 import pytest
@@ -180,3 +181,14 @@ def test_local_and_test_modes_accept_explicit_current_token() -> None:
 
     assert settings.agent_token_current is not None
     assert settings.agent_token_current.get_secret_value() == "explicit-test-token"
+
+
+@pytest.mark.parametrize("compose_name", ("docker-compose.yml", "docker-compose.local.yml"))
+def test_compose_requires_current_token_and_passes_next_only_when_set(
+    compose_name: str,
+) -> None:
+    compose = (Path(__file__).parents[2] / compose_name).read_text(encoding="utf-8")
+
+    assert "AGENT_TOKEN_CURRENT: ${AGENT_TOKEN_CURRENT:?" in compose
+    assert "AGENT_TOKEN_NEXT:" in compose
+    assert "AGENT_TOKEN_NEXT: ${AGENT_TOKEN_NEXT:-}" not in compose
