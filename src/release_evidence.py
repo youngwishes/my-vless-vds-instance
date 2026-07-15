@@ -11,6 +11,7 @@ from typing import NoReturn
 
 
 MAX_EVIDENCE_BYTES = 64 * 1024
+_MAX_JSON_NESTING = 1_000
 _SHA_PATTERN = re.compile(r"^[0-9a-f]{40}$")
 _XRAY_VERSION = "26.7.11"
 _XRAY_IMAGE_DIGEST = (
@@ -159,18 +160,22 @@ def _validate_compatibility(path: Path) -> None:
 
 
 def _reject_duplicate_keys(value: object, *, path: str = "evidence") -> None:
-    if isinstance(value, list):
-        for child in value:
-            _reject_duplicate_keys(child, path=path)
-        return
-    if not isinstance(value, _JSONObject):
-        return
-    if value.has_duplicate:
-        _fail(path, "duplicate")
-    safe_children = _TOP_LEVEL_KEYS if path == "evidence" else set()
-    for key, child in value.items():
-        child_path = key if key in safe_children else path
-        _reject_duplicate_keys(child, path=child_path)
+    stack: list[tuple[object, str, int]] = [(value, path, 0)]
+    while stack:
+        current, current_path, depth = stack.pop()
+        if depth > _MAX_JSON_NESTING:
+            _fail("evidence", "json")
+        if isinstance(current, list):
+            stack.extend((child, current_path, depth + 1) for child in current)
+            continue
+        if not isinstance(current, _JSONObject):
+            continue
+        if current.has_duplicate:
+            _fail(current_path, "duplicate")
+        safe_children = _TOP_LEVEL_KEYS if current_path == "evidence" else set()
+        for key, child in current.items():
+            child_path = key if key in safe_children else current_path
+            stack.append((child, child_path, depth + 1))
 
 
 def validate_release_evidence(
@@ -263,7 +268,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         return 1
     try:
         evidence = json.loads(raw, object_pairs_hook=_JSONObject)
-    except (json.JSONDecodeError, UnicodeError):
+    except (json.JSONDecodeError, RecursionError, UnicodeError, ValueError):
         print("release evidence invalid: evidence:json", file=sys.stderr)
         return 1
     try:

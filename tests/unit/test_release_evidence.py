@@ -226,6 +226,63 @@ def test_cli_rejects_duplicate_keys_without_reflecting_key(
     assert duplicate_key not in captured.err
 
 
+def test_cli_rejects_parser_recursion_without_traceback_or_path(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    from src.release_evidence import main
+
+    secret = "sensitive-parser-depth-path"
+    evidence_path = tmp_path / f"{secret}.json"
+    evidence_path.write_text("[" * 2_000 + "]" * 2_000, encoding="utf-8")
+
+    exit_code = main(["--expected-head", HEAD, str(evidence_path)])
+
+    captured = capsys.readouterr()
+    assert exit_code == 1
+    assert captured.err == "release evidence invalid: evidence:json\n"
+    assert secret not in captured.err
+
+
+def test_cli_handles_deep_duplicate_traversal_without_recursion(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    from src.release_evidence import main
+
+    depth = 700
+    document = (
+        '{"contract":'
+        + "[" * depth
+        + '{"major":"v1","major":"v2"}'
+        + "]" * depth
+        + "}"
+    )
+    evidence_path = tmp_path / "release-evidence.json"
+    evidence_path.write_text(document, encoding="utf-8")
+
+    exit_code = main(["--expected-head", HEAD, str(evidence_path)])
+
+    captured = capsys.readouterr()
+    assert exit_code == 1
+    assert captured.err == "release evidence invalid: contract:duplicate\n"
+    assert "major" not in captured.err
+
+
+def test_cli_rejects_huge_integer_without_traceback_or_value_echo(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    from src.release_evidence import main
+
+    evidence_path = tmp_path / "release-evidence.json"
+    evidence_path.write_text("1" * 5_000, encoding="utf-8")
+
+    exit_code = main(["--expected-head", HEAD, str(evidence_path)])
+
+    captured = capsys.readouterr()
+    assert exit_code == 1
+    assert captured.err == "release evidence invalid: evidence:json\n"
+    assert "111111" not in captured.err
+
+
 def test_cli_rejects_oversized_input_before_parsing(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
