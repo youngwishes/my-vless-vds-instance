@@ -2,10 +2,11 @@ from __future__ import annotations
 
 from typing import Annotated
 
-from fastapi import Depends, Header
+from fastapi import Depends, Header, Request
 
 from src.api.schemas import SafeErrorDTO
 from src.security import require_bearer_token
+from src.observability import EventCode
 
 
 class IncompatibleContractError(Exception):
@@ -13,11 +14,13 @@ class IncompatibleContractError(Exception):
 
 
 def require_contract_version(
+    request: Request,
     x_agent_contract_version: Annotated[
         str | None, Header(alias="X-Agent-Contract-Version")
     ] = None,
 ) -> None:
     if x_agent_contract_version != "v1":
+        request.app.state.observability.record(EventCode.INCOMPATIBLE_CONTRACT)
         raise IncompatibleContractError
 
 

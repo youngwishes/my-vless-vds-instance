@@ -57,6 +57,11 @@ services:
       public: {}
     ports: ["${VLESS_PUBLIC_PORT:-8443}:${VLESS_PUBLIC_PORT:-8443}/tcp"]
     read_only: true
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
     security_opt: [no-new-privileges:true]
     tmpfs: [/tmp]
     volumes: [xray-config:/usr/local/etc/xray:ro]
@@ -87,6 +92,11 @@ services:
     networks: [management]
     ports: ["127.0.0.1:${VLESS_AGENT_PORT:-8000}:8000"]
     read_only: true
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
     security_opt: [no-new-privileges:true]
     tmpfs: [/tmp]
     volumes:

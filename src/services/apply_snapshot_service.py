@@ -1,10 +1,12 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field as dataclass_field
 from enum import StrEnum
-from typing import TYPE_CHECKING, Protocol, final
+import time
+from typing import TYPE_CHECKING, Callable, Protocol, final
 
 from src.domain import SnapshotError, validate_snapshot
+from src.observability import Observability
 from src.storage import SnapshotRecoveryError
 
 if TYPE_CHECKING:
@@ -58,17 +60,31 @@ class ApplySnapshotService:
     apply_accesses: ApplyAccesses
     store: SnapshotStoreContract
     checkpoint_hook: CheckpointHook = noop_checkpoint_hook
+    observer: Observability = dataclass_field(default_factory=Observability)
+    monotonic: Callable[[], float] = time.monotonic
 
     def __call__(self, *, snapshot: SnapshotDTO) -> SnapshotDTO:
-        validated = validate_snapshot(snapshot)
-        self.checkpoint_hook(checkpoint=ApplyCheckpoint.BEFORE_XRAY_APPLY)
-        self.apply_accesses(accesses=validated.accesses)
-        self.checkpoint_hook(
-            checkpoint=ApplyCheckpoint.AFTER_XRAY_APPLY_BEFORE_PERSISTENCE
-        )
-        self.store.save(snapshot=validated)
-        self.checkpoint_hook(
-            checkpoint=ApplyCheckpoint.AFTER_DURABLE_RENAME_BEFORE_RETURN
+        started = self.monotonic()
+        try:
+            validated = validate_snapshot(snapshot)
+            self.checkpoint_hook(checkpoint=ApplyCheckpoint.BEFORE_XRAY_APPLY)
+            self.apply_accesses(accesses=validated.accesses)
+            self.checkpoint_hook(
+                checkpoint=ApplyCheckpoint.AFTER_XRAY_APPLY_BEFORE_PERSISTENCE
+            )
+            self.store.save(snapshot=validated)
+            self.checkpoint_hook(
+                checkpoint=ApplyCheckpoint.AFTER_DURABLE_RENAME_BEFORE_RETURN
+            )
+        except BaseException:
+            self.observer.observe_apply(
+                succeeded=False,
+                latency_seconds=max(0.0, self.monotonic() - started),
+            )
+            raise
+        self.observer.observe_apply(
+            succeeded=True,
+            latency_seconds=max(0.0, self.monotonic() - started),
         )
         return validated
 

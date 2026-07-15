@@ -6,6 +6,7 @@ from typing import Annotated
 from fastapi import Depends, Request
 from fastapi.responses import JSONResponse
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
+from src.observability import EventCode
 
 
 _bearer_scheme = HTTPBearer(auto_error=False, scheme_name="bearerAuth")
@@ -39,6 +40,7 @@ async def require_bearer_token(
     ],
 ) -> None:
     if credentials is None or credentials.scheme.lower() != "bearer":
+        request.app.state.observability.record(EventCode.AUTH_FAILURE)
         raise BearerAuthenticationError
 
     settings = request.app.state.settings
@@ -55,6 +57,7 @@ async def require_bearer_token(
         for token in configured_tokens
     )
     if not any(matches):
+        request.app.state.observability.record(EventCode.AUTH_FAILURE)
         raise BearerAuthenticationError
 
 

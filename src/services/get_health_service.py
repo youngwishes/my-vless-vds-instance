@@ -1,9 +1,10 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, final
 
 from src.services.snapshot_runtime import AgentRuntimeState, Readiness
+from src.observability import EventCode, Observability
 
 if TYPE_CHECKING:
     from src.api.schemas import SnapshotDTO
@@ -28,6 +29,7 @@ class GetHealthService:
     agent_sha: str
     xray_version: str
     xray_image_digest: str
+    observer: Observability = field(default_factory=Observability)
 
     def __call__(self) -> HealthStatus:
         with self.state.lock:
@@ -41,6 +43,7 @@ class GetHealthService:
                     self.state.record_not_ready()
                     raise
                 if not matches:
+                    self.observer.record(EventCode.REVISION_DRIFT)
                     self.state.record_not_ready()
                     status = self.state.read()
             return HealthStatus(

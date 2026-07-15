@@ -12,6 +12,7 @@ from src.api.routes import health_router, snapshot_router
 from src.api.openapi import contract_v1_openapi
 from src.api.routes.dependencies import IncompatibleContractError
 from src.factories import create_agent_services
+from src.observability import EventCode
 from src.security import (
     BearerAuthenticationError,
     bearer_authentication_exception_handler,
@@ -34,6 +35,7 @@ def create_app(*, settings: Settings, services: AgentServices | None = None) -> 
         try:
             await run_in_threadpool(resolved_services.startup_restore)
         except Exception:
+            resolved_services.observability.record(EventCode.STARTUP_RESTORE_FAILURE)
             resolved_services.state.record_not_ready()
         yield
 
@@ -55,6 +57,7 @@ def create_app(*, settings: Settings, services: AgentServices | None = None) -> 
     )
     app.state.settings = settings
     app.state.services = resolved_services
+    app.state.observability = resolved_services.observability
     app.include_router(health_router)
     app.include_router(snapshot_router)
     app.openapi = contract_v1_openapi  # type: ignore[method-assign]

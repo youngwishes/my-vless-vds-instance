@@ -6,6 +6,7 @@ from threading import RLock
 from typing import TYPE_CHECKING, Protocol, final
 
 from src.domain import validate_snapshot
+from src.observability import EventCode, Observability
 
 if TYPE_CHECKING:
     from src.api.schemas import SnapshotDTO
@@ -48,6 +49,7 @@ class ApplySnapshotResult:
 @dataclass(kw_only=True, slots=True, frozen=True)
 class AgentRuntimeState:
     lock: RLock = field(default_factory=RLock)
+    observer: Observability = field(default_factory=Observability)
     _status: list[RuntimeStatus] = field(
         default_factory=lambda: [
             RuntimeStatus(readiness=Readiness.NOT_READY, snapshot=None)
@@ -60,24 +62,38 @@ class AgentRuntimeState:
 
     def record_recovery(self, *, snapshot: SnapshotDTO) -> None:
         with self.lock:
+            previous = self._status[0].readiness
             self._status[0] = RuntimeStatus(
                 readiness=Readiness.RECOVERY_READY,
                 snapshot=snapshot,
             )
+            if previous is not Readiness.RECOVERY_READY:
+                self.observer.record(EventCode.READINESS_RECOVERY_READY)
 
     def record_not_ready(self) -> None:
         with self.lock:
+            previous = self._status[0].readiness
             self._status[0] = RuntimeStatus(
                 readiness=Readiness.NOT_READY,
                 snapshot=self._status[0].snapshot,
             )
+            if previous is not Readiness.NOT_READY:
+                self.observer.record(EventCode.READINESS_NOT_READY)
 
     def record_applied(self, *, snapshot: SnapshotDTO, matches: bool) -> None:
         with self.lock:
+            readiness = Readiness.READY if matches else Readiness.NOT_READY
+            previous = self._status[0].readiness
             self._status[0] = RuntimeStatus(
-                readiness=Readiness.READY if matches else Readiness.NOT_READY,
+                readiness=readiness,
                 snapshot=snapshot,
             )
+            if previous is not readiness:
+                self.observer.record(
+                    EventCode.READINESS_READY
+                    if readiness is Readiness.READY
+                    else EventCode.READINESS_NOT_READY
+                )
 
 
 class ApplySnapshot(Protocol):
@@ -94,6 +110,7 @@ class SnapshotCoordinatorService:
     state: AgentRuntimeState
     apply_snapshot: ApplySnapshot
     exact_set_matches: ExactSetMatches
+    observer: Observability = field(default_factory=Observability)
 
     def __call__(self, *, snapshot: SnapshotDTO) -> ApplySnapshotResult:
         validated = validate_snapshot(snapshot)
@@ -101,10 +118,12 @@ class SnapshotCoordinatorService:
             current = self.state.read().snapshot
             if current is not None:
                 if validated.snapshot_revision < current.snapshot_revision:
+                    self.observer.record(EventCode.REVISION_DRIFT)
                     self.state.record_not_ready()
                     raise StaleRevisionError
                 if validated.snapshot_revision == current.snapshot_revision:
                     if validated.snapshot_hash != current.snapshot_hash:
+                        self.observer.record(EventCode.REVISION_CONFLICT)
                         self.state.record_not_ready()
                         raise RevisionConflictError
                     try:
@@ -113,6 +132,8 @@ class SnapshotCoordinatorService:
                         self.state.record_not_ready()
                         raise
                     self.state.record_applied(snapshot=current, matches=matches)
+                    if not matches:
+                        self.observer.record(EventCode.REVISION_DRIFT)
                     return ApplySnapshotResult(
                         result=ApplySnapshotResultKind.NO_OP,
                         snapshot=current,
@@ -129,6 +150,8 @@ class SnapshotCoordinatorService:
             except BaseException:
                 raise
             self.state.record_applied(snapshot=applied, matches=matches)
+            if not matches:
+                self.observer.record(EventCode.REVISION_DRIFT)
             return ApplySnapshotResult(
                 result=ApplySnapshotResultKind.APPLIED,
                 snapshot=applied,

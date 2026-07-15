@@ -11,6 +11,7 @@ from src.api.schemas import AppliedSnapshotDTO, ApplyResultDTO, SafeErrorDTO, Sn
 from src.domain import MAX_CANONICAL_BYTES
 from src.exceptions import IncompatibleSchemaVersionError, InvalidSnapshotError, SnapshotTooLargeError
 from src.services import RevisionConflictError, StaleRevisionError
+from src.observability import EventCode
 
 
 router = APIRouter()
@@ -66,6 +67,7 @@ async def put_snapshot(request: Request) -> ApplyResultDTO | Response:
     async for chunk in request.stream():
         remaining = _MAX_RAW_REQUEST_BYTES - len(body)
         if len(chunk) > remaining:
+            request.app.state.observability.record(EventCode.SNAPSHOT_OVERFLOW)
             return _error(
                 status_code=413,
                 code="snapshot_too_large",
@@ -79,8 +81,10 @@ async def put_snapshot(request: Request) -> ApplyResultDTO | Response:
             snapshot=snapshot,
         )
     except SnapshotTooLargeError:
+        request.app.state.observability.record(EventCode.SNAPSHOT_OVERFLOW)
         return _error(status_code=413, code="snapshot_too_large", message="Snapshot exceeds the supported contract limits.")
     except IncompatibleSchemaVersionError:
+        request.app.state.observability.record(EventCode.INCOMPATIBLE_CONTRACT)
         return _error(status_code=426, code="incompatible_contract", message="The requested contract or schema major is not supported.")
     except StaleRevisionError:
         return _error(status_code=409, code="stale_revision", message="Snapshot revision is older than the applied revision.")

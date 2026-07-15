@@ -1,11 +1,12 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field as dataclass_field
 from typing import Protocol, final
 
 import grpc
 
 from src.config import Settings
+from src.observability import Observability
 from src.services import (
     AgentRuntimeState,
     ApplySnapshotService,
@@ -15,7 +16,7 @@ from src.services import (
     StartupRestoreService,
 )
 from src.storage import SnapshotStore
-from src.xray import ApplyExactSetService, ExactSetMatchesService, GrpcXrayClient
+from src.xray import ApplyExactSetService, ExactSetMatchesService, GrpcXrayClient, ObservedXrayClient
 
 
 class StartupRestore(Protocol):
@@ -30,6 +31,7 @@ class AgentServices:
     get_snapshot: GetSnapshotService
     put_snapshot: SnapshotCoordinatorService
     startup_restore: StartupRestore
+    observability: Observability = dataclass_field(default_factory=Observability)
 
 
 @final
@@ -51,10 +53,14 @@ class InitializeRuntimeService:
 
 
 def create_agent_services(*, settings: Settings) -> AgentServices:
+    observability = Observability()
     channel = grpc.insecure_channel(settings.xray_api_target)
-    client = GrpcXrayClient(
-        channel=channel,
-        timeout_seconds=settings.xray_api_timeout_seconds,
+    client = ObservedXrayClient(
+        client=GrpcXrayClient(
+            channel=channel,
+            timeout_seconds=settings.xray_api_timeout_seconds,
+        ),
+        observer=observability,
     )
     apply_accesses = ApplyExactSetService(
         client=client,
@@ -65,10 +71,11 @@ def create_agent_services(*, settings: Settings) -> AgentServices:
         managed_inbound_tag=settings.xray_managed_inbound_tag,
     )
     store = SnapshotStore(path=settings.snapshot_path)
-    state = AgentRuntimeState()
+    state = AgentRuntimeState(observer=observability)
     apply_snapshot = ApplySnapshotService(
         apply_accesses=apply_accesses,
         store=store,
+        observer=observability,
     )
     return AgentServices(
         state=state,
@@ -78,17 +85,20 @@ def create_agent_services(*, settings: Settings) -> AgentServices:
             agent_sha=settings.agent_sha,
             xray_version=settings.xray_version,
             xray_image_digest=settings.xray_image_digest,
+            observer=observability,
         ),
         get_snapshot=GetSnapshotService(state=state),
         put_snapshot=SnapshotCoordinatorService(
             state=state,
             apply_snapshot=apply_snapshot,
             exact_set_matches=probe,
+            observer=observability,
         ),
         startup_restore=InitializeRuntimeService(
             state=state,
             restore=StartupRestoreService(apply_accesses=apply_accesses, store=store),
         ),
+        observability=observability,
     )
 
 
