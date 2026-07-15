@@ -5,6 +5,13 @@ CI, test deployment, smoke results, and authenticated runtime health must all
 refer to that same SHA. The evidence JSON is an external operator artifact:
 `release-evidence*.json` is ignored and a filled report must never be committed.
 
+The direct-bridge bootstrap evidence is also external. This tracked template and
+compatibility matrix are not updated with a bootstrap SHA during the uncommitted
+bootstrap itself; that happens only in a separate final tracked commit after the
+new topology's CI, review, test deployment, and smoke. Docker 29.6 loopback
+baseline `564dc521016cc7463f7e7870ceb159b60883cccb` is not an operational
+rollback target for that bootstrap.
+
 ## Closed evidence schema
 
 The validator accepts exactly the fields below. Replace every placeholder with

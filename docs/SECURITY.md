@@ -36,3 +36,13 @@ TLS termination, certificate, nginx, allowlist and pre-agent connection
 failures belong to the nginx/deployment plane and must be monitored there. They
 do not add an agent route, response field, header, or OpenAPI operation. The v1
 surface remains exactly health GET plus snapshot GET/PUT.
+
+TLS is mandatory at the external host nginx listener. The sole plaintext
+exception is host nginx and the no-proxy deployment health proof talking to
+`172.31.255.3:8000` on the Compose-owned internal `172.31.255.0/28` bridge.
+That bridge has gateway `172.31.255.1`, Xray `172.31.255.2`, and agent
+`172.31.255.3`; the agent has no host binding. Deployment fails closed on CIDR
+overlap, malformed inspection data, ownership drift, endpoint drift, or runtime
+topology drift and never repairs a suspect network. Bootstrap evidence stays
+external, and no bootstrap SHA enters the compatibility matrix before the
+separate final tracked commit.

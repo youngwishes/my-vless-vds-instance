@@ -17,6 +17,7 @@ DEPLOY = ROOT / "deploy"
 ROLE = DEPLOY / "roles" / "vless_agent"
 XRAY_DIGEST = "sha256:a1644183accdb0b5be967093fe34be756fd5de15fe2ee0206e842ae17350967f"
 REVIEWED_AGENT_SHA = "564dc521016cc7463f7e7870ceb159b60883cccb"
+MANAGEMENT_SUBNET = "172.31.255.0/28"
 
 
 def _read(path: Path) -> str:
@@ -295,16 +296,12 @@ def test_env_wires_revision_node_secrets_and_pinned_xray_evidence() -> None:
     assert "no_log: true" in tasks
 
 
-def test_rendered_compose_is_checked_for_digest_loopback_and_named_volume() -> None:
+def test_rendered_compose_is_checked_for_exact_private_topology_and_named_volume() -> None:
     tasks = _read(ROLE / "tasks" / "main.yml")
 
     assert "config, --format, json" in tasks
-    assert "vless_agent_compose_config.services.xray.image ==" in tasks
-    assert "ghcr.io/xtls/xray-core@" + XRAY_DIGEST in tasks
-    assert "vless_agent_compose_config.services.agent.ports" in tasks
-    assert "host_ip == '127.0.0.1'" in tasks
-    assert "vless_agent_has_durable_snapshot_volume(vless_agent_snapshot_volume)" in tasks
-    assert "Rendered Compose must retain exact Xray digest, loopback API, and snapshot volume" in tasks
+    assert "vless_agent_valid_rendered_topology(vless_agent_snapshot_volume)" in tasks
+    assert "exact private topology, Xray digest, and snapshot volume" in tasks
 
 
 def test_compose_snapshot_volume_validator_rejects_broken_topologies() -> None:
@@ -342,6 +339,193 @@ def test_compose_snapshot_volume_validator_rejects_broken_topologies() -> None:
         assert not validator(broken, expected_name)
 
 
+def _rendered_compose_topology() -> dict[str, object]:
+    return {
+        "services": {
+            "xray": {
+                "image": "ghcr.io/xtls/xray-core@" + XRAY_DIGEST,
+                "networks": {
+                    "management": {"ipv4_address": "172.31.255.2"},
+                    "public": {},
+                },
+            },
+            "agent": {
+                "networks": {
+                    "management": {"ipv4_address": "172.31.255.3"},
+                },
+                "volumes": [
+                    {
+                        "type": "volume",
+                        "source": "agent-snapshot",
+                        "target": "/var/lib/vless-agent",
+                        "read_only": False,
+                    }
+                ],
+            },
+        },
+        "networks": {
+            "management": {
+                "internal": True,
+                "ipam": {
+                    "config": [
+                        {"subnet": MANAGEMENT_SUBNET, "gateway": "172.31.255.1"}
+                    ]
+                },
+            },
+            "public": {},
+        },
+        "volumes": {"agent-snapshot": {"name": "vless-agent_agent-snapshot"}},
+    }
+
+
+def test_rendered_compose_topology_validator_is_exact_and_preserves_invariants() -> None:
+    validator = _load_role_filters()["vless_agent_valid_rendered_topology"]
+    valid = _rendered_compose_topology()
+
+    assert validator(valid, "vless-agent_agent-snapshot")
+    mutations = (
+        lambda value: value["networks"]["management"].update(internal=False),
+        lambda value: value["networks"]["management"]["ipam"]["config"][0].update(subnet="172.31.255.0/29"),
+        lambda value: value["networks"]["management"]["ipam"]["config"][0].update(gateway="172.31.255.4"),
+        lambda value: value["services"]["xray"]["networks"]["management"].update(ipv4_address="172.31.255.4"),
+        lambda value: value["services"]["xray"]["networks"].pop("public"),
+        lambda value: value["services"]["agent"]["networks"]["management"].update(ipv4_address="172.31.255.4"),
+        lambda value: value["services"]["agent"]["networks"].update(public={}),
+        lambda value: value["services"]["agent"].update(ports=[]),
+        lambda value: value["services"]["agent"].update(ports=[{"published": "8000"}]),
+        lambda value: value["services"]["xray"].update(image="xray:latest"),
+        lambda value: value["volumes"]["agent-snapshot"].update(name="wrong"),
+    )
+    for mutate in mutations:
+        broken = json.loads(json.dumps(valid))
+        mutate(broken)
+        assert not validator(broken, "vless-agent_agent-snapshot")
+
+
+def _expected_network() -> dict[str, object]:
+    return {
+        "Name": "vless-agent_management",
+        "Id": "abcdef0123456789",
+        "Internal": True,
+        "Labels": {
+            "com.docker.compose.project": "vless-agent",
+            "com.docker.compose.network": "management",
+        },
+        "IPAM": {
+            "Config": [{"Subnet": MANAGEMENT_SUBNET, "Gateway": "172.31.255.1"}]
+        },
+        "Containers": {},
+    }
+
+
+@pytest.mark.parametrize(
+    "conflict",
+    [
+        "172.31.255.0/28",
+        "172.31.255.0/29",
+        "172.31.254.0/23",
+    ],
+)
+def test_network_preflight_rejects_equal_subset_and_superset_cidrs(conflict: str) -> None:
+    validator = _load_role_filters()["vless_agent_network_preflight_safe"]
+    addresses = [{"ifname": "eth0", "addr_info": [{"family": "inet", "local": str(conflict).split("/")[0], "prefixlen": int(conflict.split("/")[1])}]}]
+
+    assert not validator(addresses, [], [], "vless-agent")
+    assert not validator([], [{"dst": conflict, "dev": "eth0"}], [], "vless-agent")
+    assert not validator([], [], [{"Name": "foreign", "IPAM": {"Config": [{"Subnet": conflict}]}}], "vless-agent")
+
+
+def test_network_preflight_allows_adjacent_cidr_and_verified_expected_bridge() -> None:
+    validator = _load_role_filters()["vless_agent_network_preflight_safe"]
+    expected = _expected_network()
+    addresses = [
+        {"ifname": "eth0", "addr_info": [{"family": "inet", "local": "172.31.255.17", "prefixlen": 28}]},
+        {"ifname": "br-abcdef012345", "addr_info": [{"family": "inet", "local": "172.31.255.1", "prefixlen": 28}]},
+    ]
+    routes = [
+        {"dst": "172.31.255.16/28", "dev": "eth0"},
+        {"dst": MANAGEMENT_SUBNET, "dev": "br-abcdef012345", "scope": "link"},
+    ]
+
+    assert validator(addresses, routes, [expected], "vless-agent")
+
+
+@pytest.mark.parametrize(
+    "mutate",
+    [
+        lambda value: value.update(Name="wrong"),
+        lambda value: value.update(Internal=False),
+        lambda value: value["Labels"].update({"com.docker.compose.project": "other"}),
+        lambda value: value["Labels"].update({"com.docker.compose.network": "other"}),
+        lambda value: value["IPAM"]["Config"][0].update(Subnet="172.31.255.0/29"),
+        lambda value: value["IPAM"]["Config"][0].update(Gateway="172.31.255.4"),
+    ],
+)
+def test_network_preflight_rejects_expected_network_ownership_or_topology_drift(mutate: object) -> None:
+    validator = _load_role_filters()["vless_agent_network_preflight_safe"]
+    network = _expected_network()
+    mutate(network)
+
+    assert not validator([], [], [network], "vless-agent")
+
+
+@pytest.mark.parametrize(
+    ("occupant_name", "address", "expected"),
+    [
+        ("vless-agent-xray-1", "172.31.255.2/28", True),
+        ("vless-agent-agent-1", "172.31.255.3/28", True),
+        ("foreign", "172.31.255.2/28", False),
+        ("vless-agent-agent-1", "172.31.255.2/28", False),
+        ("foreign", "172.31.255.3/28", False),
+    ],
+)
+def test_network_preflight_checks_reserved_endpoint_ownership(
+    occupant_name: str, address: str, expected: bool
+) -> None:
+    validator = _load_role_filters()["vless_agent_network_preflight_safe"]
+    network = _expected_network()
+    network["Containers"] = {
+        "container-id": {"Name": occupant_name, "IPv4Address": address}
+    }
+    addresses = [{"ifname": "br-abcdef012345", "addr_info": [{"family": "inet", "local": "172.31.255.1", "prefixlen": 28}]}]
+    routes = [{"dst": MANAGEMENT_SUBNET, "dev": "br-abcdef012345"}]
+
+    assert validator(addresses, routes, [network], "vless-agent") is expected
+
+
+@pytest.mark.parametrize(
+    ("addresses", "routes", "networks"),
+    [
+        ({}, [], []),
+        ([{"ifname": "eth0", "addr_info": "bad"}], [], []),
+        ([], {}, []),
+        ([], [{"dst": "malformed", "dev": "eth0"}], []),
+        ([], [], {}),
+        ([], [], [{"Name": "foreign", "IPAM": {"Config": "bad"}}]),
+    ],
+)
+def test_network_preflight_fails_closed_on_malformed_inspection_data(
+    addresses: object, routes: object, networks: object
+) -> None:
+    validator = _load_role_filters()["vless_agent_network_preflight_safe"]
+
+    assert not validator(addresses, routes, networks, "vless-agent")
+
+
+def test_host_and_docker_network_preflight_runs_before_compose_start() -> None:
+    tasks = _walk_tasks(_yaml(ROLE / "tasks" / "main.yml"))
+    names = [task.get("name") for task in tasks]
+    safety = next(task for task in tasks if task.get("name") == "Reject host or Docker management network conflicts")
+
+    assert safety["no_log"] is True
+    assert safety["ansible.builtin.assert"]["that"] == [
+        "vless_agent_host_ipv4_addresses | vless_agent_network_preflight_safe(vless_agent_host_ipv4_routes, vless_agent_docker_networks, vless_agent_compose_project_name)"
+    ]
+    assert names.index("Reject host or Docker management network conflicts") < names.index(
+        "Mark candidate Compose as possibly started"
+    )
+
+
 def test_every_compose_command_uses_pinned_project_name_and_volume_relation() -> None:
     tasks = _walk_tasks(_yaml(ROLE / "tasks" / "main.yml"))
     compose_argv = [
@@ -364,18 +548,117 @@ def test_every_compose_command_uses_pinned_project_name_and_volume_relation() ->
     assert "vless_agent_snapshot_volume == vless_agent_compose_project_name ~ '_agent-snapshot'" in task_text
 
 
-def test_nginx_is_tls_only_ipv4_and_proxies_only_to_loopback() -> None:
+def test_nginx_is_tls_only_ipv4_and_proxies_only_to_internal_agent() -> None:
     nginx = _read(ROLE / "templates" / "vless-agent.nginx.conf.j2")
 
     assert "listen 0.0.0.0:{{ vless_agent_management_port }} ssl;" in nginx
     assert "ssl_protocols TLSv1.2 TLSv1.3;" in nginx
-    assert "proxy_pass http://127.0.0.1:{{ vless_agent_port }};" in nginx
+    assert "proxy_pass http://172.31.255.3:8000;" in nginx
     assert "access_log off;" in nginx
     assert "server_tokens off;" in nginx
     assert "client_max_body_size" in nginx
     assert "listen 80" not in nginx
     assert "[::]" not in nginx
     assert "proxy_pass http://0.0.0.0" not in nginx
+
+
+def _runtime_inspection(*, agent_ports: object = None) -> tuple[list[dict[str, object]], list[dict[str, object]], list[dict[str, object]]]:
+    network = _expected_network()
+    network["Containers"] = {
+        "xray-container-id": {
+            "Name": "vless-agent-xray-1",
+            "IPv4Address": "172.31.255.2/28",
+        },
+        "agent-container-id": {
+            "Name": "vless-agent-agent-1",
+            "IPv4Address": "172.31.255.3/28",
+        },
+    }
+    xray = {
+        "Id": "xray-container-id-full",
+        "Name": "/vless-agent-xray-1",
+        "Config": {"Labels": {"com.docker.compose.project": "vless-agent", "com.docker.compose.service": "xray"}},
+        "NetworkSettings": {
+            "Networks": {
+                "vless-agent_management": {"IPAddress": "172.31.255.2"},
+                "vless-agent_public": {"IPAddress": "172.20.0.2"},
+            }
+        },
+        "HostConfig": {"PortBindings": {"443/tcp": [{"HostPort": "443"}]}},
+    }
+    agent = {
+        "Id": "agent-container-id-full",
+        "Name": "/vless-agent-agent-1",
+        "Config": {"Labels": {"com.docker.compose.project": "vless-agent", "com.docker.compose.service": "agent"}},
+        "NetworkSettings": {
+            "Networks": {"vless-agent_management": {"IPAddress": "172.31.255.3"}},
+            "Ports": agent_ports,
+        },
+        "HostConfig": {
+            "PortBindings": {} if agent_ports == {"8000/tcp": None} else agent_ports
+        },
+    }
+    return [network], [xray], [agent]
+
+
+@pytest.mark.parametrize("empty_ports", [None, {}, {"8000/tcp": None}])
+def test_runtime_topology_validator_accepts_exact_inspection_with_no_agent_bindings(empty_ports: object) -> None:
+    validator = _load_role_filters()["vless_agent_valid_runtime_topology"]
+    network, xray, agent = _runtime_inspection(agent_ports=empty_ports)
+
+    assert validator(network, xray, agent, "vless-agent")
+
+
+@pytest.mark.parametrize(
+    "mutate",
+    [
+        lambda network, xray, agent: network[0].update(Internal=False),
+        lambda network, xray, agent: network[0]["IPAM"]["Config"][0].update(Gateway="172.31.255.4"),
+        lambda network, xray, agent: xray[0]["NetworkSettings"]["Networks"]["vless-agent_management"].update(IPAddress="172.31.255.4"),
+        lambda network, xray, agent: xray[0]["NetworkSettings"]["Networks"].pop("vless-agent_public"),
+        lambda network, xray, agent: agent[0]["NetworkSettings"]["Networks"]["vless-agent_management"].update(IPAddress="172.31.255.4"),
+        lambda network, xray, agent: agent[0]["NetworkSettings"]["Networks"].update(**{"vless-agent_public": {"IPAddress": "172.20.0.3"}}),
+        lambda network, xray, agent: agent[0]["NetworkSettings"].update(Ports={"8000/tcp": [{"HostPort": "8000"}]}),
+        lambda network, xray, agent: agent[0]["HostConfig"].update(PortBindings={"8000/tcp": [{"HostPort": "8000"}]}),
+        lambda network, xray, agent: agent[0]["Config"]["Labels"].update({"com.docker.compose.project": "other"}),
+    ],
+)
+def test_runtime_topology_validator_rejects_drift_and_agent_publication(mutate: object) -> None:
+    validator = _load_role_filters()["vless_agent_valid_runtime_topology"]
+    network, xray, agent = _runtime_inspection()
+    mutate(network, xray, agent)
+
+    assert not validator(network, xray, agent, "vless-agent")
+
+
+def test_runtime_inspection_and_direct_health_precede_nginx_install() -> None:
+    tasks = _walk_tasks(_yaml(ROLE / "tasks" / "main.yml"))
+    names = [task.get("name") for task in tasks]
+    direct = next(task for task in tasks if task.get("name") == "Verify authenticated direct bridge health")
+
+    assert direct["ansible.builtin.uri"]["url"] == "http://172.31.255.3:8000/api/v1/health"
+    assert direct["ansible.builtin.uri"]["use_proxy"] is False
+    assert direct["ansible.builtin.uri"]["headers"] == {
+        "Authorization": "Bearer {{ vless_agent_token_current }}",
+        "X-Agent-Contract-Version": "v1",
+    }
+    assert direct["no_log"] is True
+    assert names.index("Require exact running management topology") < names.index(
+        "Verify authenticated direct bridge health"
+    )
+    assert names.index("Verify authenticated direct bridge health") < names.index(
+        "Install nginx TLS virtual host"
+    )
+    for suffix in (
+        "status == 200",
+        "json.agent_sha == vless_agent_active_revision",
+        "json.contract_version == 'v1'",
+        "json.schema_version == '1.0'",
+        "json.xray_version == '26.7.11'",
+        f"json.xray_image_digest == '{XRAY_DIGEST}'",
+        "json.readiness in ['READY', 'RECOVERY_READY', 'NOT_READY']",
+    ):
+        assert "vless_agent_direct_health." + suffix in direct["until"]
 
 
 def test_tls_preflight_checks_files_expiry_hostname_and_key_match() -> None:
@@ -687,7 +970,7 @@ def test_deploy_and_rollback_health_requests_bypass_host_proxy() -> None:
         and task["ansible.builtin.uri"]["url"].endswith("/api/v1/health")
     ]
 
-    assert len(health_requests) == 2
+    assert len(health_requests) == 3
     assert all(request["use_proxy"] is False for request in health_requests)
 
 
@@ -894,6 +1177,51 @@ def test_documentation_covers_safe_rollout_recovery_rotation_and_approval() -> N
     assert "does not yet add its candidate sha" in normalized_compatibility
 
 
+def test_operational_docs_define_direct_bridge_bootstrap_boundary() -> None:
+    docs = {
+        path: " ".join(_read(ROOT / path).lower().split())
+        for path in (
+            "README.md",
+            "docs/DEPLOY.md",
+            "docs/SECURITY.md",
+            "docs/RUNBOOK.md",
+            "docs/COMPATIBILITY.md",
+        )
+    }
+    combined = "\n".join(docs.values())
+
+    assert "tls is mandatory" in combined
+    assert "sole plaintext exception" in combined
+    assert MANAGEMENT_SUBNET in combined
+    for address in ("172.31.255.1", "172.31.255.2", "172.31.255.3"):
+        assert address in combined
+    assert "fail closed" in combined or "fails closed" in combined
+    assert "overlap" in combined and "drift" in combined
+    assert "not an operational rollback target" in docs["docs/COMPATIBILITY.md"]
+    assert REVIEWED_AGENT_SHA in docs["docs/COMPATIBILITY.md"]
+    assert "bootstrap evidence" in combined and "external" in combined
+    assert "separate final tracked commit" in combined
+    assert "no bootstrap sha" in combined
+
+    for example in (
+        "deploy/group_vars/vless_test.example.yml",
+        "deploy/group_vars/vless_prod.example.yml",
+    ):
+        rollback_revisions = _yaml(ROOT / example)[
+            "vless_agent_compatible_rollback_revisions"
+        ]
+        assert REVIEWED_AGENT_SHA not in rollback_revisions
+
+
+def test_loopback_baseline_is_rejected_as_bootstrap_rollback_target() -> None:
+    tasks = _read(ROLE / "tasks" / "main.yml")
+
+    assert (
+        f"'{REVIEWED_AGENT_SHA}' not in vless_agent_compatible_rollback_revisions"
+        in tasks
+    )
+
+
 def test_deploy_docs_describe_contract_accurate_identity_anchor() -> None:
     deploy_doc = _read(ROOT / "docs" / "DEPLOY.md").lower()
 
@@ -942,4 +1270,10 @@ def test_deploy_artifacts_contain_no_unsafe_secret_or_mutable_runtime() -> None:
     )
     for value in forbidden:
         assert value not in text
-    assert not re.search(r"(?<![\d.])(10\.\d+\.\d+\.\d+|172\.(?:1[6-9]|2\d|3[01])\.\d+\.\d+|192\.168\.\d+\.\d+)", text)
+    private_addresses = set(
+        re.findall(
+            r"(?<![\d.])(10\.\d+\.\d+\.\d+|172\.(?:1[6-9]|2\d|3[01])\.\d+\.\d+|192\.168\.\d+\.\d+)",
+            text,
+        )
+    )
+    assert private_addresses <= {"172.31.255.0", "172.31.255.1", "172.31.255.2", "172.31.255.3"}

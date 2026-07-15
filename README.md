@@ -37,9 +37,11 @@ log their values. To rotate without downtime, set a separately generated
 `AGENT_TOKEN_NEXT`, switch the backend after health/reconcile succeeds, then
 promote next to current and remove the overlap value.
 
-Every agent endpoint, including health, must be exposed only through HTTPS with
-certificate verification enabled. Plain HTTP is not a supported deployment,
-including on private networks.
+TLS is mandatory for every externally exposed agent endpoint, including health,
+and certificate verification stays enabled. The sole plaintext exception is
+traffic from host nginx, plus the deployment's direct health proof, to the agent
+at `172.31.255.3:8000` on the Compose-owned internal bridge. That bridge is not
+an external API exposure.
 
 Run tests and validate production Compose:
 
@@ -94,17 +96,18 @@ stops startup. DNS resolution itself runs behind the same wall-clock deadline;
 a blocked system resolver is abandoned without delaying startup failure.
 
 Only the VLESS TCP port is public. Xray's HandlerService network is internal,
-the agent API is bound to host loopback, roots are read-only, and runtime
+the agent has no published host port, roots are read-only, and runtime
 containers drop all capabilities and run non-root. All management routes
 require bearer authentication and the contract-version header; none is a
 public unauthenticated health route.
 
-The internal management network deliberately reserves `172.31.255.0/28` and
-assigns Xray `172.31.255.2`. The HandlerService listener binds only that address,
-so attaching Xray to the public bridge does not expose port 10085. Verify this
-subnet does not overlap host, VPC, or other Docker networks before deployment;
-if it does, change the Compose subnet, Xray static address, renderer management
-address, healthcheck target, and agent target together and rerun runtime tests.
+The internal management network is exactly `172.31.255.0/28`: its gateway is
+`172.31.255.1`, Xray is `172.31.255.2`, and the agent is `172.31.255.3`. The
+HandlerService listener binds only the Xray address, so attaching Xray to the
+public bridge does not expose port 10085. Deployment fails closed on malformed
+inspection data, subnet overlap, ownership drift, topology drift, or unexpected
+occupants of `.2` or `.3`; it never deletes, recreates, or repairs a drifted
+network. Adjacent subnets are allowed.
 The one-shot volume initializer also assigns the generated-config volume to uid
 65532 and the durable snapshot volume to the pinned agent uid 999 before either
 runtime starts.

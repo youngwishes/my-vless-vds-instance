@@ -13,6 +13,7 @@
       - vless_agent_compose_project_name | length <= 63
       - vless_agent_snapshot_volume == vless_agent_compose_project_name ~ '_agent-snapshot'
       - vless_agent_snapshot_backup_retention | int > 0
+      - "'564dc521016cc7463f7e7870ceb159b60883cccb' not in vless_agent_compatible_rollback_revisions"
       - vless_agent_reality_target | length > 0
       - vless_agent_reality_server_name | length > 0
       - vless_agent_reality_short_ids | length > 0
@@ -470,12 +471,62 @@
     - name: Require immutable runtime and durable deployment boundaries
       ansible.builtin.assert:
         that:
-          - vless_agent_compose_config.services.xray.image == 'ghcr.io/xtls/xray-core@sha256:a1644183accdb0b5be967093fe34be756fd5de15fe2ee0206e842ae17350967f'
-          - vless_agent_compose_config.services.agent.ports | length == 1
-          - vless_agent_compose_config.services.agent.ports[0].host_ip == '127.0.0.1'
-          - vless_agent_compose_config.services.agent.ports[0].target | int == 8000
-          - vless_agent_compose_config | vless_agent_has_durable_snapshot_volume(vless_agent_snapshot_volume)
-        fail_msg: Rendered Compose must retain exact Xray digest, loopback API, and snapshot volume
+          - vless_agent_compose_config | vless_agent_valid_rendered_topology(vless_agent_snapshot_volume)
+        fail_msg: Rendered Compose must retain the exact private topology, Xray digest, and snapshot volume
+      no_log: true
+
+    - name: Collect host IPv4 interface networks
+      ansible.builtin.command:
+        argv: [ip, -j, -4, address, show]
+      register: vless_agent_host_ipv4_addresses_json
+      changed_when: false
+      no_log: true
+
+    - name: Collect host IPv4 routes
+      ansible.builtin.command:
+        argv: [ip, -j, -4, route, show, table, all]
+      register: vless_agent_host_ipv4_routes_json
+      changed_when: false
+      no_log: true
+
+    - name: List Docker networks for overlap inspection
+      ansible.builtin.command:
+        argv: [docker, network, ls, --quiet, --no-trunc]
+      register: vless_agent_docker_network_ids
+      changed_when: false
+      no_log: true
+
+    - name: Require canonical Docker network identifiers
+      ansible.builtin.assert:
+        that:
+          - item is match('^[0-9a-f]{64}$')
+        fail_msg: Docker network listing returned malformed inspection data
+      loop: "{{ vless_agent_docker_network_ids.stdout_lines }}"
+      no_log: true
+
+    - name: Inspect every Docker network
+      ansible.builtin.command:
+        argv: "{{ ['docker', 'network', 'inspect'] + vless_agent_docker_network_ids.stdout_lines }}"
+      register: vless_agent_docker_networks_json
+      changed_when: false
+      when: vless_agent_docker_network_ids.stdout_lines | length > 0
+      no_log: true
+
+    - name: Parse host and Docker network inspection privately
+      ansible.builtin.set_fact:
+        vless_agent_host_ipv4_addresses: "{{ vless_agent_host_ipv4_addresses_json.stdout | from_json }}"
+        vless_agent_host_ipv4_routes: "{{ vless_agent_host_ipv4_routes_json.stdout | from_json }}"
+        vless_agent_docker_networks: >-
+          {{ (vless_agent_docker_networks_json.stdout | from_json)
+             if vless_agent_docker_network_ids.stdout_lines | length > 0
+             else [] }}
+      no_log: true
+
+    - name: Reject host or Docker management network conflicts
+      ansible.builtin.assert:
+        that:
+          - vless_agent_host_ipv4_addresses | vless_agent_network_preflight_safe(vless_agent_host_ipv4_routes, vless_agent_docker_networks, vless_agent_compose_project_name)
+        fail_msg: Refusing to start Compose because the reserved management network overlaps or has drifted
       no_log: true
 
     - name: Mark candidate Compose as possibly started
@@ -486,6 +537,87 @@
       ansible.builtin.command:
         argv: [docker, compose, -p, "{{ vless_agent_compose_project_name }}", --env-file, "{{ vless_agent_env_path }}", -f, docker-compose.yml, up, -d, --build, --remove-orphans]
         chdir: "{{ vless_agent_deploy_dir }}"
+      no_log: true
+
+    - name: Resolve running Xray container identifier
+      ansible.builtin.command:
+        argv: [docker, compose, -p, "{{ vless_agent_compose_project_name }}", --env-file, "{{ vless_agent_env_path }}", -f, docker-compose.yml, ps, --quiet, xray]
+        chdir: "{{ vless_agent_deploy_dir }}"
+      register: vless_agent_xray_container_id
+      changed_when: false
+      no_log: true
+
+    - name: Resolve running agent container identifier
+      ansible.builtin.command:
+        argv: [docker, compose, -p, "{{ vless_agent_compose_project_name }}", --env-file, "{{ vless_agent_env_path }}", -f, docker-compose.yml, ps, --quiet, agent]
+        chdir: "{{ vless_agent_deploy_dir }}"
+      register: vless_agent_agent_container_id
+      changed_when: false
+      no_log: true
+
+    - name: Require unambiguous running container identifiers
+      ansible.builtin.assert:
+        that:
+          - vless_agent_xray_container_id.stdout is match('^[0-9a-f]{64}$')
+          - vless_agent_agent_container_id.stdout is match('^[0-9a-f]{64}$')
+        fail_msg: Compose did not return exact running Xray and agent containers
+      no_log: true
+
+    - name: Inspect running management network
+      ansible.builtin.command:
+        argv: [docker, network, inspect, "{{ vless_agent_compose_project_name }}_management"]
+      register: vless_agent_running_network_json
+      changed_when: false
+      no_log: true
+
+    - name: Inspect running Xray container
+      ansible.builtin.command:
+        argv: [docker, container, inspect, "{{ vless_agent_xray_container_id.stdout }}"]
+      register: vless_agent_running_xray_json
+      changed_when: false
+      no_log: true
+
+    - name: Inspect running agent container
+      ansible.builtin.command:
+        argv: [docker, container, inspect, "{{ vless_agent_agent_container_id.stdout }}"]
+      register: vless_agent_running_agent_json
+      changed_when: false
+      no_log: true
+
+    - name: Parse running topology privately
+      ansible.builtin.set_fact:
+        vless_agent_running_network: "{{ vless_agent_running_network_json.stdout | from_json }}"
+        vless_agent_running_xray: "{{ vless_agent_running_xray_json.stdout | from_json }}"
+        vless_agent_running_agent: "{{ vless_agent_running_agent_json.stdout | from_json }}"
+      no_log: true
+
+    - name: Require exact running management topology
+      ansible.builtin.assert:
+        that:
+          - vless_agent_running_network | vless_agent_valid_runtime_topology(vless_agent_running_xray, vless_agent_running_agent, vless_agent_compose_project_name)
+        fail_msg: Running Docker topology differs from the reviewed private management bridge
+      no_log: true
+
+    - name: Verify authenticated direct bridge health
+      ansible.builtin.uri:
+        url: http://172.31.255.3:8000/api/v1/health
+        method: GET
+        use_proxy: false
+        return_content: true
+        headers:
+          Authorization: Bearer {{ vless_agent_token_current }}
+          X-Agent-Contract-Version: v1
+      register: vless_agent_direct_health
+      retries: 12
+      delay: 5
+      until:
+        - vless_agent_direct_health.status == 200
+        - vless_agent_direct_health.json.agent_sha == vless_agent_active_revision
+        - vless_agent_direct_health.json.contract_version == 'v1'
+        - vless_agent_direct_health.json.schema_version == '1.0'
+        - vless_agent_direct_health.json.xray_version == '26.7.11'
+        - vless_agent_direct_health.json.xray_image_digest == 'sha256:a1644183accdb0b5be967093fe34be756fd5de15fe2ee0206e842ae17350967f'
+        - vless_agent_direct_health.json.readiness in ['READY', 'RECOVERY_READY', 'NOT_READY']
       no_log: true
 
     - name: Install nginx TLS virtual host

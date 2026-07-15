@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 import re
-from ipaddress import AddressValueError, IPv4Address
+from ipaddress import AddressValueError, IPv4Address, IPv4Network, ip_network
 from typing import Any, Mapping
 
 
@@ -67,6 +67,335 @@ def has_durable_snapshot_volume(value: object, expected_name: object) -> bool:
         len(target_mounts) == 1
         and len(matching_mounts) == 1
         and volume_definition.get("name") == expected_name
+    )
+
+
+_MANAGEMENT_NETWORK = IPv4Network("172.31.255.0/28")
+_MANAGEMENT_GATEWAY = "172.31.255.1"
+_XRAY_ADDRESS = "172.31.255.2"
+_AGENT_ADDRESS = "172.31.255.3"
+_XRAY_IMAGE = (
+    "ghcr.io/xtls/xray-core@"
+    "sha256:a1644183accdb0b5be967093fe34be756fd5de15fe2ee0206e842ae17350967f"
+)
+
+
+def valid_rendered_topology(value: object, expected_volume: object) -> bool:
+    if not isinstance(value, Mapping) or not isinstance(expected_volume, str):
+        return False
+    try:
+        services = value["services"]
+        networks = value["networks"]
+        xray = services["xray"]
+        agent = services["agent"]
+        management = networks["management"]
+        ipam_config = management["ipam"]["config"]
+    except (KeyError, TypeError):
+        return False
+    if not all(
+        isinstance(item, Mapping)
+        for item in (services, networks, xray, agent, management)
+    ):
+        return False
+    return (
+        management.get("internal") is True
+        and isinstance(ipam_config, list)
+        and ipam_config
+        == [{"subnet": str(_MANAGEMENT_NETWORK), "gateway": _MANAGEMENT_GATEWAY}]
+        and xray.get("image") == _XRAY_IMAGE
+        and xray.get("networks")
+        == {
+            "management": {"ipv4_address": _XRAY_ADDRESS},
+            "public": {},
+        }
+        and agent.get("networks")
+        == {"management": {"ipv4_address": _AGENT_ADDRESS}}
+        and "ports" not in agent
+        and has_durable_snapshot_volume(value, expected_volume)
+    )
+
+
+def _docker_network_ipv4_subnets(value: Mapping[str, object]) -> list[IPv4Network] | None:
+    ipam = value.get("IPAM")
+    if not isinstance(ipam, Mapping):
+        return None
+    configs = ipam.get("Config")
+    if not isinstance(configs, list):
+        return None
+    subnets: list[IPv4Network] = []
+    for config in configs:
+        if not isinstance(config, Mapping):
+            return None
+        subnet = config.get("Subnet")
+        if not isinstance(subnet, str):
+            return None
+        try:
+            parsed = ip_network(subnet, strict=False)
+        except ValueError:
+            return None
+        if isinstance(parsed, IPv4Network):
+            subnets.append(parsed)
+    return subnets
+
+
+def _expected_network_bridge(
+    network: Mapping[str, object], expected_project: str
+) -> str | None:
+    expected_name = f"{expected_project}_management"
+    labels = network.get("Labels")
+    ipam = network.get("IPAM")
+    if not isinstance(labels, Mapping) or not isinstance(ipam, Mapping):
+        return None
+    configs = ipam.get("Config")
+    if (
+        network.get("Name") != expected_name
+        or network.get("Internal") is not True
+        or labels.get("com.docker.compose.project") != expected_project
+        or labels.get("com.docker.compose.network") != "management"
+        or not isinstance(configs, list)
+        or configs
+        != [{"Subnet": str(_MANAGEMENT_NETWORK), "Gateway": _MANAGEMENT_GATEWAY}]
+    ):
+        return None
+    options = network.get("Options", {})
+    if not isinstance(options, Mapping):
+        return None
+    explicit_name = options.get("com.docker.network.bridge.name")
+    if explicit_name is not None:
+        return explicit_name if isinstance(explicit_name, str) and explicit_name else None
+    network_id = network.get("Id")
+    if not isinstance(network_id, str) or not re.fullmatch(r"[0-9a-f]{12,}", network_id):
+        return None
+    return f"br-{network_id[:12]}"
+
+
+def _reserved_endpoints_safe(
+    network: Mapping[str, object], expected_project: str
+) -> bool:
+    containers = network.get("Containers")
+    if not isinstance(containers, Mapping):
+        return False
+    expected_names = {
+        _XRAY_ADDRESS: re.compile(rf"^{re.escape(expected_project)}-xray-[1-9][0-9]*$"),
+        _AGENT_ADDRESS: re.compile(rf"^{re.escape(expected_project)}-agent-[1-9][0-9]*$"),
+    }
+    for endpoint in containers.values():
+        if not isinstance(endpoint, Mapping):
+            return False
+        name = endpoint.get("Name")
+        address = endpoint.get("IPv4Address")
+        if not isinstance(name, str) or not isinstance(address, str):
+            return False
+        try:
+            parsed = address.split("/", 1)[0]
+            IPv4Address(parsed)
+        except (AddressValueError, ValueError):
+            return False
+        expected = expected_names.get(parsed)
+        if expected is not None and expected.fullmatch(name) is None:
+            return False
+    return True
+
+
+def network_preflight_safe(
+    addresses: object,
+    routes: object,
+    networks: object,
+    expected_project: object,
+) -> bool:
+    if (
+        not isinstance(addresses, list)
+        or not isinstance(routes, list)
+        or not isinstance(networks, list)
+        or not isinstance(expected_project, str)
+        or not expected_project
+    ):
+        return False
+
+    expected_name = f"{expected_project}_management"
+    expected_network: Mapping[str, object] | None = None
+    for network in networks:
+        if not isinstance(network, Mapping):
+            return False
+        subnets = _docker_network_ipv4_subnets(network)
+        if subnets is None:
+            return False
+        overlaps = any(subnet.overlaps(_MANAGEMENT_NETWORK) for subnet in subnets)
+        if network.get("Name") == expected_name:
+            if expected_network is not None:
+                return False
+            expected_network = network
+            if _expected_network_bridge(network, expected_project) is None:
+                return False
+            if not _reserved_endpoints_safe(network, expected_project):
+                return False
+        elif overlaps:
+            return False
+
+    bridge = (
+        _expected_network_bridge(expected_network, expected_project)
+        if expected_network is not None
+        else None
+    )
+    for interface in addresses:
+        if not isinstance(interface, Mapping) or not isinstance(interface.get("ifname"), str):
+            return False
+        details = interface.get("addr_info")
+        if not isinstance(details, list):
+            return False
+        for address in details:
+            if not isinstance(address, Mapping):
+                return False
+            if address.get("family") != "inet":
+                continue
+            local = address.get("local")
+            prefixlen = address.get("prefixlen")
+            if not isinstance(local, str) or not isinstance(prefixlen, int):
+                return False
+            try:
+                subnet = IPv4Network(f"{local}/{prefixlen}", strict=False)
+            except ValueError:
+                return False
+            if subnet.overlaps(_MANAGEMENT_NETWORK) and not (
+                bridge is not None
+                and interface["ifname"] == bridge
+                and local == _MANAGEMENT_GATEWAY
+                and prefixlen == _MANAGEMENT_NETWORK.prefixlen
+            ):
+                return False
+
+    allowed_route_destinations = {
+        str(_MANAGEMENT_NETWORK),
+        _MANAGEMENT_GATEWAY,
+        str(_MANAGEMENT_NETWORK.network_address),
+        str(_MANAGEMENT_NETWORK.broadcast_address),
+    }
+    for route in routes:
+        if not isinstance(route, Mapping):
+            return False
+        destination = route.get("dst")
+        if destination == "default":
+            continue
+        if not isinstance(destination, str) or not isinstance(route.get("dev"), str):
+            return False
+        try:
+            subnet = ip_network(destination, strict=False)
+        except ValueError:
+            return False
+        if isinstance(subnet, IPv4Network) and subnet.overlaps(_MANAGEMENT_NETWORK):
+            normalized = destination.split("/", 1)[0] if subnet.prefixlen == 32 else str(subnet)
+            if not (
+                bridge is not None
+                and route["dev"] == bridge
+                and normalized in allowed_route_destinations
+            ):
+                return False
+    return True
+
+
+def _single_inspect(value: object) -> Mapping[str, object] | None:
+    if not isinstance(value, list) or len(value) != 1 or not isinstance(value[0], Mapping):
+        return None
+    return value[0]
+
+
+def _runtime_container_valid(
+    container: Mapping[str, object],
+    *,
+    project: str,
+    service: str,
+    expected_networks: Mapping[str, str],
+) -> bool:
+    config = container.get("Config")
+    settings = container.get("NetworkSettings")
+    host_config = container.get("HostConfig")
+    if not all(isinstance(item, Mapping) for item in (config, settings, host_config)):
+        return False
+    labels = config.get("Labels")
+    memberships = settings.get("Networks")
+    if not isinstance(labels, Mapping) or not isinstance(memberships, Mapping):
+        return False
+    name = container.get("Name")
+    if (
+        not isinstance(name, str)
+        or re.fullmatch(rf"/?{re.escape(project)}-{service}-[1-9][0-9]*", name) is None
+        or labels.get("com.docker.compose.project") != project
+        or labels.get("com.docker.compose.service") != service
+        or set(memberships) != set(expected_networks)
+    ):
+        return False
+    for network_name, expected_address in expected_networks.items():
+        network = memberships.get(network_name)
+        if not isinstance(network, Mapping) or network.get("IPAddress") != expected_address:
+            return False
+    if service == "agent":
+        exposed_ports = settings.get("Ports")
+        if not (
+            exposed_ports in (None, {})
+            or (
+                isinstance(exposed_ports, Mapping)
+                and all(bindings in (None, []) for bindings in exposed_ports.values())
+            )
+        ):
+            return False
+        if host_config.get("PortBindings") not in (None, {}):
+            return False
+    return True
+
+
+def valid_runtime_topology(
+    network_inspect: object,
+    xray_inspect: object,
+    agent_inspect: object,
+    expected_project: object,
+) -> bool:
+    if not isinstance(expected_project, str) or not expected_project:
+        return False
+    network = _single_inspect(network_inspect)
+    xray = _single_inspect(xray_inspect)
+    agent = _single_inspect(agent_inspect)
+    if network is None or xray is None or agent is None:
+        return False
+    if _expected_network_bridge(network, expected_project) is None:
+        return False
+    containers = network.get("Containers")
+    if not isinstance(containers, Mapping) or len(containers) != 2:
+        return False
+    endpoints = {
+        endpoint.get("Name"): endpoint.get("IPv4Address")
+        for endpoint in containers.values()
+        if isinstance(endpoint, Mapping)
+    }
+    if endpoints != {
+        f"{expected_project}-xray-1": f"{_XRAY_ADDRESS}/28",
+        f"{expected_project}-agent-1": f"{_AGENT_ADDRESS}/28",
+    }:
+        return False
+    xray_settings = xray.get("NetworkSettings")
+    if not isinstance(xray_settings, Mapping):
+        return False
+    xray_networks = xray_settings.get("Networks")
+    if not isinstance(xray_networks, Mapping):
+        return False
+    public_endpoint = xray_networks.get(f"{expected_project}_public")
+    if not isinstance(public_endpoint, Mapping):
+        return False
+    public_address = public_endpoint.get("IPAddress")
+    if not isinstance(public_address, str) or not public_address:
+        return False
+    return _runtime_container_valid(
+        xray,
+        project=expected_project,
+        service="xray",
+        expected_networks={
+            f"{expected_project}_management": _XRAY_ADDRESS,
+            f"{expected_project}_public": public_address,
+        },
+    ) and _runtime_container_valid(
+        agent,
+        project=expected_project,
+        service="agent",
+        expected_networks={f"{expected_project}_management": _AGENT_ADDRESS},
     )
 
 
@@ -149,9 +478,12 @@ class FilterModule:
             "vless_agent_all_node_tokens_unique": all_node_tokens_unique,
             "vless_agent_compose_runtime_was_running": compose_runtime_was_running,
             "vless_agent_has_durable_snapshot_volume": has_durable_snapshot_volume,
+            "vless_agent_network_preflight_safe": network_preflight_safe,
             "vless_agent_nginx_listeners": nginx_listeners,
             "vless_agent_safe_packaged_nginx_default": safe_packaged_nginx_default,
             "vless_agent_unicast_ipv4": is_unicast_ipv4,
+            "vless_agent_valid_rendered_topology": valid_rendered_topology,
+            "vless_agent_valid_runtime_topology": valid_runtime_topology,
         }
 
 
@@ -161,6 +493,9 @@ __all__ = (
     "compose_runtime_was_running",
     "has_durable_snapshot_volume",
     "is_unicast_ipv4",
+    "network_preflight_safe",
     "nginx_listeners",
     "safe_packaged_nginx_default",
+    "valid_rendered_topology",
+    "valid_runtime_topology",
 )

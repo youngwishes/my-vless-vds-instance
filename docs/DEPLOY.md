@@ -20,18 +20,25 @@ instructions prepare commands; they do not grant approval to run them.
    The certificate must match the agent domain and remain valid beyond the
    configured safety window. The private key must be a regular non-symlink file
    with mode 0400 or 0600 and must match the certificate.
-5. Confirm the central-backend IPv4 allowlist and management port. Verify the
-   host has no conflicting Docker/VPC subnet and that VLESS TCP 443 and
-   established SSH remain reachable. The role exposes no plaintext management
-   listener: nginx provides TLS only, while Compose binds the agent to loopback.
-6. Remove or disable every unmanaged nginx listener out of band. The role does
+5. Confirm the central-backend IPv4 allowlist and management port. TLS is
+   mandatory at external host nginx. The sole plaintext exception is host nginx
+   and the deployment's direct authenticated health request to the agent on the
+   Compose-owned internal bridge. The agent publishes no host port.
+6. Reserve exactly `172.31.255.0/28`: gateway `172.31.255.1`, Xray
+   `172.31.255.2`, and agent `172.31.255.3`. Verify that VLESS TCP 443 and
+   established SSH remain reachable. The role inspects host IPv4 interfaces,
+   routes, every Docker network, reserved endpoints, and the actual started
+   containers. Equal, subset, or superset overlap, malformed data, foreign
+   ownership, or topology drift fails closed; an adjacent subnet is allowed.
+   It never deletes, recreates, or silently repairs a drifted network.
+7. Remove or disable every unmanaged nginx listener out of band. The role does
    not delete operator configuration. It disables only the packaged enabled
    symlink `/etc/nginx/sites-enabled/default`, and only after proving that it is
    a symlink to `/etc/nginx/sites-available/default`; a regular file or another
    target fails closed. After installing its candidate virtual host the role
    runs `nginx -t` and inspects `nginx -T`; every effective `listen` directive
    must reduce to the single intended IPv4 TLS management listener.
-7. Confirm the rendered Compose topology maps the logical `agent-snapshot`
+8. Confirm the rendered Compose topology maps the logical `agent-snapshot`
    volume read-write to `/var/lib/vless-agent` and pins its concrete name to the
    configured Compose project. A bind, read-only mount, target drift, or volume
    name mismatch stops before replacement.
@@ -44,9 +51,13 @@ ansible-playbook -i deploy/inventory.ini deploy/playbook-test.yml \
   --ask-vault-pass -e deploy_revision=<EXACT_TESTED_40_CHARACTER_SHA>
 ```
 
-The health gate verifies TLS, bearer authentication, canonical contract v1 and
-schema 1.0 fields, exact agent SHA, readiness, and exact Xray version/digest with
-bounded retries. Canonical health has no `node_id`. Deployment identity is
+Before nginx installation, a bounded authenticated request directly to
+`http://172.31.255.3:8000/api/v1/health` proves the inspected bridge topology,
+contract, schema, exact agent SHA, Xray evidence, and readiness without a host
+proxy. Only then may nginx be installed, validated, and reloaded. The final
+external health gate verifies TLS plus the same bearer authentication, canonical
+contract v1 and schema 1.0 fields, exact agent SHA, readiness, and exact Xray
+version/digest. Canonical health has no `node_id`. Deployment identity is
 instead anchored by the inventory-specific token lookup, the per-host
 certificate/domain, and the verified exact checkout SHA. After test health, run
 backend reconcile and verify the expected snapshot revision and hash before
@@ -142,3 +153,10 @@ stopped Compose project, or incomplete/unsafe prior configuration also stops
 with state and private backup preserved. Recovery then requires an explicitly
 reviewed compatible revision or a forward fix; never delete the snapshot or
 force an unreviewed schema downgrade.
+
+For this direct-bridge bootstrap, Docker 29.6 loopback baseline
+`564dc521016cc7463f7e7870ceb159b60883cccb` is not an operational rollback
+target and the role rejects it in the compatible list. Bootstrap evidence is an
+external operator artifact. No bootstrap SHA is added to the compatibility
+matrix until the separate final tracked commit has its own CI, review, test
+deployment, smoke, and evidence.

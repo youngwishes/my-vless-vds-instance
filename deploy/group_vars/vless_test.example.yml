@@ -5,8 +5,7 @@ vless_agent_tls_certificate_path: /etc/vless-agent/tls/fullchain.pem
 vless_agent_tls_private_key_path: /etc/vless-agent/tls/private.key
 vless_agent_central_backend_ipv4_allowlist:
   - 192.0.2.10
-vless_agent_compatible_rollback_revisions:
-  - 564dc521016cc7463f7e7870ceb159b60883cccb
+vless_agent_compatible_rollback_revisions: []
 vless_agent_reality_target: origin.example.invalid:443
 vless_agent_reality_server_name: origin.example.invalid
 vless_agent_reality_short_ids: 0123456789abcdef

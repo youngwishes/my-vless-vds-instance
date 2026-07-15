@@ -7,6 +7,9 @@ the backend's complete exact snapshot without hand-editing either copy.
 ## Safety rules
 
 - Keep certificate verification enabled. Never use `curl -k`.
+- TLS is mandatory at external host nginx. The sole plaintext exception is host
+  nginx or the deployment's authenticated direct health proof reaching the
+  agent at `172.31.255.3:8000` on its Compose-owned internal bridge.
 - Never print or paste bearer tokens, snapshot bodies, VLESS UUIDs, REALITY
   keys, or Xray generated configuration into terminals, tickets, or logs.
 - Obtain credentials through the approved secret mechanism and pass them using
@@ -70,6 +73,18 @@ chain and expiry, firewall/allowlist, and DNS. TLS terminates in the deployment
 plane, so an agent event cannot diagnose a handshake that never reached it.
 Keep verification enabled and do not change the API contract to work around a
 transport problem.
+
+For management-network failure, verify the exact `172.31.255.0/28` topology:
+gateway `172.31.255.1`, Xray `172.31.255.2`, and agent `172.31.255.3`. Treat any
+equal/subset/superset overlap, unexpected `.2`/`.3` occupant, ownership drift,
+or malformed inspect result as fail closed. Do not delete, recreate, connect,
+disconnect, or silently repair the network. Docker 29.6 loopback baseline
+`564dc521016cc7463f7e7870ceb159b60883cccb` is not an operational rollback
+target for this bootstrap; preserve state and use a reviewed forward fix.
+
+Bootstrap evidence is external and contains no secrets or free-form diagnostics.
+No bootstrap SHA is added to `COMPATIBILITY.md` until the separate final tracked
+commit completes its own gates.
 
 ## Authentication and rotation
 
