@@ -64,6 +64,13 @@ class Settings(BaseSettings):
             raise ValueError("runtime endpoint value must not be blank")
         return stripped
 
+    @field_validator("agent_token_next", mode="before")
+    @classmethod
+    def _empty_next_token_is_unset(cls, value: object) -> object:
+        if isinstance(value, str) and value == "":
+            return None
+        return value
+
     @field_validator("agent_token_current", "agent_token_next")
     @classmethod
     def _reject_blank_token(cls, value: SecretStr | None) -> SecretStr | None:

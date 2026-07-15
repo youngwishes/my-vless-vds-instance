@@ -28,8 +28,8 @@
 - name: Resolve per-node Vault values
   ansible.builtin.set_fact:
     vless_agent_node_tokens: "{{ vault_vless_agent_tokens[inventory_hostname] }}"
-    vless_agent_token_current: "{{ vault_vless_agent_tokens[inventory_hostname].current }}"
-    vless_agent_token_next: "{{ vault_vless_agent_tokens[inventory_hostname].next | default('') }}"
+    vless_agent_token_current: "{{ vault_vless_agent_tokens[inventory_hostname].current | trim }}"
+    vless_agent_token_next: "{{ vault_vless_agent_tokens[inventory_hostname].next | default('') | trim }}"
     vless_agent_reality_private_key: "{{ vault_reality_private_keys[inventory_hostname] }}"
   no_log: true
 

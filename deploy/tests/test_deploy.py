@@ -262,6 +262,25 @@ def test_all_nonempty_current_and_next_tokens_are_fleet_unique() -> None:
     )
 
 
+def test_vault_tokens_are_trimmed_before_rendering_and_uniqueness_validation() -> None:
+    parsed_tasks = _walk_tasks(_yaml(ROLE / "tasks" / "main.yml"))
+    resolution_task = next(
+        task for task in parsed_tasks if task.get("name") == "Resolve per-node Vault values"
+    )
+    facts = resolution_task["ansible.builtin.set_fact"]
+
+    assert facts["vless_agent_token_current"].endswith(".current | trim }}")
+    assert facts["vless_agent_token_next"].endswith("default('') | trim }}")
+
+    validator = _load_role_filters()["vless_agent_all_node_tokens_unique"]
+    assert not validator(
+        {
+            "node-a": {"current": "a" * 32 + "\n", "next": ""},
+            "node-b": {"current": "a" * 32, "next": ""},
+        }
+    )
+
+
 def test_env_wires_revision_node_secrets_and_pinned_xray_evidence() -> None:
     env = _read(ROLE / "templates" / "agent.env.j2")
     tasks = _read(ROLE / "tasks" / "main.yml")

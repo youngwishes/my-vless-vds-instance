@@ -183,6 +183,19 @@ def test_local_and_test_modes_accept_explicit_current_token() -> None:
     assert settings.agent_token_current.get_secret_value() == "explicit-test-token"
 
 
+def test_exact_empty_next_token_from_compose_is_treated_as_unset(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("VLESS_NODE_ID", "node-01")
+    monkeypatch.setenv("ENVIRONMENT_MODE", "test")
+    monkeypatch.setenv("AGENT_TOKEN_CURRENT", "explicit-test-token")
+    monkeypatch.setenv("AGENT_TOKEN_NEXT", "")
+
+    settings = Settings(_env_file=None)
+
+    assert settings.agent_token_next is None
+
+
 @pytest.mark.parametrize("mode", tuple(EnvironmentMode))
 @pytest.mark.parametrize("field", ("agent_token_current", "agent_token_next"))
 def test_all_modes_reject_blank_secret_str_tokens(

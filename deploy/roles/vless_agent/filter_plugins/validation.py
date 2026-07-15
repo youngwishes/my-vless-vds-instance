@@ -16,9 +16,13 @@ def all_node_tokens_unique(value: object) -> bool:
             return False
         current = node_tokens.get("current")
         next_token = node_tokens.get("next", "")
-        if not isinstance(current, str) or not current:
+        if not isinstance(current, str):
             return False
         if not isinstance(next_token, str):
+            return False
+        current = current.strip()
+        next_token = next_token.strip()
+        if not current:
             return False
         tokens.append(current)
         if next_token:
