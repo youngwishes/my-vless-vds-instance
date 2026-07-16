@@ -1,0 +1,44 @@
+#!/bin/sh
+set -eu
+
+CHAIN=VLESS_AGENT_MGMT
+NEXT_CHAIN=VLESS_AGENT_MGMT_NEW
+PORT={{ vless_agent_firewall_active_port | default(vless_agent_management_port) }}
+
+remove_chain() {
+    target="$1"
+    iptables -w -L INPUT --line-numbers -n |
+        awk -v target="$target" '$2 == target {print $1}' |
+        sort -rn |
+        while IFS= read -r line_number; do
+            if [ -n "$line_number" ]; then
+                iptables -w -D INPUT "$line_number"
+            fi
+        done
+    if iptables -w -nL "$target" >/dev/null 2>&1; then
+        iptables -w -F "$target"
+        iptables -w -X "$target"
+    fi
+}
+
+case "${1:-start}" in
+    start)
+        remove_chain "$NEXT_CHAIN"
+        iptables -w -N "$NEXT_CHAIN"
+        iptables -w -A "$NEXT_CHAIN" -i lo -p tcp --dport "$PORT" -j ACCEPT # local_health_only
+{% for source in vless_agent_central_backend_ipv4_allowlist %}
+        iptables -w -A "$NEXT_CHAIN" -s {{ source }} -p tcp --dport "$PORT" -j ACCEPT # central_backend_ipv4_allowlist
+{% endfor %}
+        iptables -w -A "$NEXT_CHAIN" -p tcp --dport "$PORT" -j REJECT
+        iptables -w -I INPUT 1 -p tcp --dport "$PORT" -j "$NEXT_CHAIN"
+        remove_chain "$CHAIN"
+        iptables -w -E "$NEXT_CHAIN" "$CHAIN"
+        ;;
+    stop)
+        remove_chain "$NEXT_CHAIN"
+        remove_chain "$CHAIN"
+        ;;
+    *)
+        exit 2
+        ;;
+esac

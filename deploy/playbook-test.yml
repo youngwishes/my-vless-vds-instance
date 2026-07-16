@@ -1,0 +1,14 @@
+---
+- name: Deploy reviewed VLESS agent revision to test
+  hosts: vless_test
+  become: true
+  any_errors_fatal: true
+  pre_tasks:
+    - name: Require an immutable deployment revision
+      ansible.builtin.assert:
+        that:
+          - deploy_revision is defined
+          - deploy_revision is match('^[0-9a-f]{40}$')
+        fail_msg: deploy_revision must be a full 40-character lowercase Git SHA
+  roles:
+    - role: vless_agent

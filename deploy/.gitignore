@@ -1,0 +1,14 @@
+inventory.ini
+inventory.*.ini
+!inventory.example.ini
+*.vault.yml
+group_vars/all/
+group_vars/vless_test.yml
+group_vars/vless_prod.yml
+!group_vars/*.example.yml
+vault-password*
+*.pem
+*.key
+*.crt
+*.p12
+*.snapshot*

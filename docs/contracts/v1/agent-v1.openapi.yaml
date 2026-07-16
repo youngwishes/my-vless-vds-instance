@@ -1,0 +1,234 @@
+openapi: 3.1.0
+info:
+  title: VLESS node agent contract
+  version: 1.0.0
+  description: >-
+    Contract v1 exposes exact-snapshot operations only. Incremental mutation
+    endpoints are prohibited. Changing canonicalization semantics, maximum
+    entries, or maximum canonical bytes requires a new contract major. An
+    operational limit may be lower and block node capacity, but an agent must
+    never accept more than the v1 maxima.
+servers:
+  - url: https://vless-agent.invalid
+    description: Placeholder only; node addresses are deployment evidence and are not committed.
+security:
+  - bearerAuth: []
+paths:
+  /api/v1/health:
+    get:
+      operationId: getHealthV1
+      parameters:
+        - $ref: '#/components/parameters/ContractVersion'
+      responses:
+        '200':
+          description: Runtime, Xray, and applied exact-snapshot readiness.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Health'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '426':
+          $ref: '#/components/responses/IncompatibleContract'
+          x-error-codes: [incompatible_contract]
+  /api/v1/snapshot:
+    get:
+      operationId: getAppliedSnapshotV1
+      parameters:
+        - $ref: '#/components/parameters/ContractVersion'
+      responses:
+        '200':
+          description: Metadata for the durable applied snapshot; UUIDs are not returned.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AppliedSnapshot'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '426':
+          $ref: '#/components/responses/IncompatibleContract'
+          x-error-codes: [incompatible_contract]
+    put:
+      operationId: putExactSnapshotV1
+      description: >-
+        Validates the complete request before Xray mutation and replaces the
+        managed inbound with exactly this set. Equal revision and hash is a
+        successful no-op; a lower revision is stale; equal revision with a
+        different hash is a conflict and makes the agent not-ready.
+      parameters:
+        - $ref: '#/components/parameters/ContractVersion'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: './snapshot-v1.schema.json'
+      responses:
+        '200':
+          description: Snapshot durably applied, or equal revision/hash no-op.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApplyResult'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '409':
+          description: Monotonic revision violation; no mutation is performed.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SafeError'
+              examples:
+                stale_revision:
+                  value:
+                    code: stale_revision
+                    message: Snapshot revision is older than the applied revision.
+                revision_conflict:
+                  value:
+                    code: revision_conflict
+                    message: Snapshot revision already exists with a different hash.
+        '413':
+          description: Entry or canonical-byte maximum exceeded before mutation.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SafeError'
+              examples:
+                snapshot_too_large:
+                  value:
+                    code: snapshot_too_large
+                    message: Snapshot exceeds the supported contract limits.
+        '426':
+          $ref: '#/components/responses/IncompatibleContract'
+          x-error-codes: [incompatible_contract]
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+  parameters:
+    ContractVersion:
+      name: X-Agent-Contract-Version
+      in: header
+      required: true
+      schema:
+        type: string
+        const: v1
+  schemas:
+    Hash:
+      type: string
+      pattern: '^[0-9a-f]{64}$'
+    Health:
+      type: object
+      additionalProperties: false
+      required:
+        - contract_version
+        - schema_version
+        - agent_sha
+        - xray_version
+        - xray_image_digest
+        - readiness
+        - applied_snapshot_revision
+        - applied_snapshot_hash
+      properties:
+        contract_version:
+          const: v1
+        schema_version:
+          const: '1.0'
+        agent_sha:
+          type: string
+          pattern: '^[0-9a-f]{40}$'
+        xray_version:
+          type: string
+        xray_image_digest:
+          type: string
+          pattern: '^sha256:[0-9a-f]{64}$'
+        readiness:
+          type: string
+          enum: [READY, NOT_READY, RECOVERY_READY]
+        applied_snapshot_revision:
+          type: [integer, 'null']
+          minimum: 1
+        applied_snapshot_hash:
+          oneOf:
+            - $ref: '#/components/schemas/Hash'
+            - type: 'null'
+    AppliedSnapshot:
+      type: object
+      additionalProperties: false
+      required: [contract_version, schema_version, snapshot_revision, snapshot_hash]
+      properties:
+        contract_version:
+          const: v1
+        schema_version:
+          const: '1.0'
+        snapshot_revision:
+          type: [integer, 'null']
+          minimum: 1
+        snapshot_hash:
+          oneOf:
+            - $ref: '#/components/schemas/Hash'
+            - type: 'null'
+    ApplyResult:
+      type: object
+      additionalProperties: false
+      required: [schema_version, snapshot_revision, snapshot_hash, result]
+      properties:
+        schema_version:
+          const: '1.0'
+        snapshot_revision:
+          type: integer
+          minimum: 1
+        snapshot_hash:
+          $ref: '#/components/schemas/Hash'
+        result:
+          type: string
+          enum: [applied, no_op]
+    SafeError:
+      type: object
+      additionalProperties: false
+      required: [code, message]
+      properties:
+        code:
+          type: string
+          enum:
+            - unauthorized
+            - stale_revision
+            - revision_conflict
+            - snapshot_too_large
+            - incompatible_contract
+        message:
+          type: string
+  responses:
+    Unauthorized:
+      description: Missing or invalid bearer authentication.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/SafeError'
+          example:
+            code: unauthorized
+            message: Authentication is required.
+    IncompatibleContract:
+      description: Unknown contract or snapshot schema major; no mutation is performed.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/SafeError'
+          example:
+            code: incompatible_contract
+            message: The requested contract or schema major is not supported.
+x-response-matrix:
+  - request: GET /api/v1/health
+    outcomes: ['200', '401', '426 incompatible_contract']
+  - request: GET /api/v1/snapshot
+    outcomes: ['200', '401', '426 incompatible_contract']
+  - request: PUT /api/v1/snapshot
+    outcomes:
+      - '200 applied'
+      - '200 no_op'
+      - '401 unauthorized'
+      - '409 stale_revision'
+      - '409 revision_conflict'
+      - '413 snapshot_too_large'
+      - '426 incompatible_contract'

@@ -1,0 +1,17 @@
+{
+  "schema_version": "1.0",
+  "snapshot_revision": 8,
+  "snapshot_hash": "44a514fe92ae6781951a5b0188836340862732fe3a95884cbc664127a35b9dce",
+  "accesses": [
+    {
+      "access_id": 10,
+      "uuid": "2f1c5a63-7bd6-4ac1-86dc-16b7adf580df",
+      "access_revision": 3
+    },
+    {
+      "access_id": 2,
+      "uuid": "01890f47-a2d4-7c11-b3e6-89f40d8639f1",
+      "access_revision": 1
+    }
+  ]
+}

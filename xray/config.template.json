@@ -1,0 +1,39 @@
+{
+  "log": {"loglevel": "warning"},
+  "api": {"tag": "api", "services": ["HandlerService"]},
+  "inbounds": [
+    {
+      "tag": "api-in",
+      "listen": "${XRAY_MANAGEMENT_IP}",
+      "port": 10085,
+      "protocol": "dokodemo-door",
+      "settings": {"address": "127.0.0.1"}
+    },
+    {
+      "tag": "vless-managed",
+      "listen": "0.0.0.0",
+      "port": "${VLESS_PUBLIC_PORT}",
+      "protocol": "vless",
+      "_managedClientFlow": "xtls-rprx-vision",
+      "settings": {"clients": [], "decryption": "none"},
+      "streamSettings": {
+        "network": "raw",
+        "security": "reality",
+        "realitySettings": {
+          "show": false,
+          "xver": 0,
+          "target": "${REALITY_TARGET}",
+          "serverNames": ["${REALITY_SERVER_NAME}"],
+          "privateKey": "${REALITY_PRIVATE_KEY}",
+          "shortIds": "${REALITY_SHORT_IDS}"
+        }
+      }
+    }
+  ],
+  "outbounds": [{"tag": "direct", "protocol": "freedom"}],
+  "routing": {
+    "rules": [
+      {"type": "field", "inboundTag": ["api-in"], "outboundTag": "api"}
+    ]
+  }
+}

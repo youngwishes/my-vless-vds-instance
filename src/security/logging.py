@@ -1,0 +1,266 @@
+from __future__ import annotations
+
+import logging
+import re
+from collections.abc import Mapping
+from functools import wraps
+from typing import Any
+
+
+REDACTED = "[REDACTED]"
+
+_QUOTED_AUTHORIZATION = re.compile(
+    r"(?i)([\"']?authorization[\"']?\s*[:=]\s*)([\"'])(.*?)(\2)"
+)
+_UNQUOTED_AUTHORIZATION = re.compile(
+    r"(?i)(\bauthorization\b\s*[:=]\s*)[^\r\n]+"
+)
+_BEARER_CREDENTIAL = re.compile(r"(?i)\bbearer\s+[^\r\n]+")
+_STANDARD_LOG_RECORD_ATTRIBUTES = frozenset(
+    logging.LogRecord("", 0, "", 0, "", (), None).__dict__
+)
+
+
+def redact_log_text(value: str) -> str:
+    value = _QUOTED_AUTHORIZATION.sub(
+        lambda match: f"{match.group(1)}{match.group(2)}{REDACTED}{match.group(2)}",
+        value,
+    )
+    value = _UNQUOTED_AUTHORIZATION.sub(
+        lambda match: f"{match.group(1)}{REDACTED}",
+        value,
+    )
+    return _BEARER_CREDENTIAL.sub(f"Bearer {REDACTED}", value)
+
+
+def _normalized_key(key: object | None) -> str:
+    try:
+        if isinstance(key, bytes):
+            return key.decode("latin-1").lower().replace("-", "_")
+        return str(key).lower().replace("-", "_") if key is not None else ""
+    except Exception:
+        return ""
+
+
+def _redacted_like(value: object) -> object:
+    if isinstance(value, bytes):
+        return REDACTED.encode("ascii")
+    if isinstance(value, bytearray):
+        return bytearray(REDACTED, "ascii")
+    return REDACTED
+
+
+def _sanitize_mapping_key(key: object) -> object:
+    if isinstance(key, str):
+        candidate: object = redact_log_text(key)
+    elif isinstance(key, bytes):
+        candidate = redact_log_text(key.decode("latin-1")).encode("latin-1")
+    elif key is None or isinstance(key, (bool, int, float, complex)):
+        candidate = key
+    elif isinstance(key, tuple):
+        candidate = _redact_log_value(key)
+    else:
+        try:
+            candidate = redact_log_text(str(key))
+        except Exception:
+            candidate = REDACTED
+    try:
+        hash(candidate)
+    except Exception:
+        return REDACTED
+    return candidate
+
+
+def _store_without_collision(
+    target: dict[Any, Any],
+    *,
+    key: object,
+    value: object,
+) -> None:
+    candidate = _sanitize_mapping_key(key)
+    try:
+        collision = candidate in target
+    except Exception:
+        collision = True
+    if collision:
+        suffix = len(target)
+        candidate = f"[REDACTED_KEY_{suffix}]"
+        while candidate in target:
+            suffix += 1
+            candidate = f"[REDACTED_KEY_{suffix}]"
+    target[candidate] = value
+
+
+def _redact_log_value(
+    value: Any,
+    *,
+    key: object | None = None,
+    seen: set[int] | None = None,
+) -> Any:
+    if seen is None:
+        seen = set()
+    normalized_key = _normalized_key(key)
+    if normalized_key in {"authorization", "authorization_header"}:
+        return _redacted_like(value)
+    if value is None or isinstance(value, (bool, int, float, complex)):
+        return value
+    if isinstance(value, str):
+        return redact_log_text(value)
+    if isinstance(value, bytes):
+        return redact_log_text(value.decode("latin-1")).encode("latin-1")
+    if isinstance(value, bytearray):
+        redacted = redact_log_text(value.decode("latin-1"))
+        return bytearray(redacted, "latin-1")
+    if isinstance(value, Mapping):
+        identity = id(value)
+        if identity in seen:
+            return REDACTED
+        seen.add(identity)
+        try:
+            redacted_mapping: dict[Any, Any] = {}
+            for item_key, item_value in value.items():
+                redacted_value = _redact_log_value(
+                    item_value,
+                    key=item_key,
+                    seen=seen,
+                )
+                _store_without_collision(
+                    redacted_mapping,
+                    key=item_key,
+                    value=redacted_value,
+                )
+            return redacted_mapping
+        except Exception:
+            return REDACTED
+        finally:
+            seen.discard(identity)
+    if isinstance(value, tuple):
+        if len(value) == 2 and _normalized_key(value[0]) in {
+            "authorization",
+            "authorization_header",
+        }:
+            return (value[0], _redacted_like(value[1]))
+        identity = id(value)
+        if identity in seen:
+            return REDACTED
+        seen.add(identity)
+        try:
+            return tuple(_redact_log_value(item, seen=seen) for item in value)
+        except Exception:
+            return REDACTED
+        finally:
+            seen.discard(identity)
+    if isinstance(value, list):
+        identity = id(value)
+        if identity in seen:
+            return REDACTED
+        seen.add(identity)
+        try:
+            return [_redact_log_value(item, seen=seen) for item in value]
+        except Exception:
+            return REDACTED
+        finally:
+            seen.discard(identity)
+    try:
+        return redact_log_text(str(value))
+    except Exception:
+        return REDACTED
+
+
+class BearerCredentialRedactionFilter(logging.Filter):
+    def filter(self, record: logging.LogRecord) -> bool:
+        try:
+            self._redact_record(record)
+        except Exception:
+            self._apply_safe_fallback(record)
+        return True
+
+    def _redact_record(self, record: logging.LogRecord) -> None:
+        try:
+            rendered_message = record.getMessage()
+        except Exception:
+            record.msg = REDACTED
+            record.args = ()
+        else:
+            record.msg = redact_log_text(rendered_message)
+            record.args = ()
+
+        if record.exc_info is not None:
+            try:
+                exception_text = logging.Formatter().formatException(record.exc_info)
+                record.exc_text = redact_log_text(exception_text)
+            except Exception:
+                record.exc_text = REDACTED
+            record.exc_info = None
+        elif record.exc_text is not None:
+            record.exc_text = redact_log_text(record.exc_text)
+        if record.stack_info is not None:
+            record.stack_info = redact_log_text(record.stack_info)
+
+        original_items = tuple(record.__dict__.items())
+        rebuilt_record = {
+            key: value
+            for key, value in original_items
+            if type(key) is str
+            and key in _STANDARD_LOG_RECORD_ATTRIBUTES
+        }
+        custom_items = tuple(
+            (key, value)
+            for key, value in original_items
+            if type(key) is not str
+            or key not in _STANDARD_LOG_RECORD_ATTRIBUTES
+        )
+        for key, value in custom_items:
+            _store_without_collision(
+                rebuilt_record,
+                key=key,
+                value=_redact_log_value(value, key=key),
+            )
+        record.__dict__.clear()
+        record.__dict__.update(rebuilt_record)
+
+    def _apply_safe_fallback(self, record: logging.LogRecord) -> None:
+        original_items = tuple(record.__dict__.items())
+        rebuilt_record = {
+            key: value
+            for key, value in original_items
+            if type(key) is str
+            and key in _STANDARD_LOG_RECORD_ATTRIBUTES
+        }
+        rebuilt_record["msg"] = REDACTED
+        rebuilt_record["args"] = ()
+        rebuilt_record["exc_info"] = None
+        rebuilt_record["exc_text"] = REDACTED
+        rebuilt_record["stack_info"] = None
+        if len(rebuilt_record) != len(original_items):
+            rebuilt_record["redaction_failure"] = REDACTED
+        record.__dict__.clear()
+        record.__dict__.update(rebuilt_record)
+
+
+def install_logging_redaction() -> None:
+    current_make_record = logging.Logger.makeRecord
+    if getattr(current_make_record, "_vless_bearer_redaction", False):
+        return
+
+    redaction_filter = BearerCredentialRedactionFilter()
+
+    @wraps(current_make_record)
+    def redacting_make_record(
+        logger: logging.Logger,
+        *args: Any,
+        **kwargs: Any,
+    ) -> logging.LogRecord:
+        record = current_make_record(logger, *args, **kwargs)
+        redaction_filter.filter(record)
+        return record
+
+    redacting_make_record._vless_bearer_redaction = True  # type: ignore[attr-defined]
+    logging.Logger.makeRecord = redacting_make_record  # type: ignore[method-assign]
+
+
+__all__ = (
+    "BearerCredentialRedactionFilter",
+    "install_logging_redaction",
+    "redact_log_text",
+)

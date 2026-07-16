@@ -1,0 +1,15 @@
+[Unit]
+Description=VLESS agent management-port source firewall
+Before=nginx.service
+After=network-pre.target
+Wants=network-pre.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/local/sbin/vless-agent-firewall start
+ExecReload=/usr/local/sbin/vless-agent-firewall start
+ExecStop=/usr/local/sbin/vless-agent-firewall stop
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,12 @@
+---
+vless_agent_repo_url: ssh://git@source.example.invalid/vless-vds-instance.git
+vless_agent_domain: node-prod-1.example.invalid
+vless_agent_tls_certificate_path: /etc/vless-agent/tls/fullchain.pem
+vless_agent_tls_private_key_path: /etc/vless-agent/tls/private.key
+vless_agent_central_backend_ipv4_allowlist:
+  - 198.51.100.10
+vless_agent_compatible_rollback_revisions:
+  - fcc8f8a678638d97247a68cc6b17d3dfe0473ff2
+vless_agent_reality_target: origin.example.invalid:443
+vless_agent_reality_server_name: origin.example.invalid
+vless_agent_reality_short_ids: 0123456789abcdef

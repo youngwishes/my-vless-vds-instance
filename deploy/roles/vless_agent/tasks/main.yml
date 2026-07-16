@@ -1,0 +1,954 @@
+---
+- name: Validate non-secret deployment inputs
+  ansible.builtin.assert:
+    that:
+      - deploy_revision is match('^[0-9a-f]{40}$')
+      - vless_agent_repo_url | length > 0
+      - vless_agent_domain | length > 0
+      - vless_agent_management_port | int > 0
+      - vless_agent_management_port | int <= 65535
+      - vless_agent_management_port | int != vless_agent_public_port | int
+      - vless_agent_central_backend_ipv4_allowlist | length > 0
+      - vless_agent_compose_project_name is match('^[a-z0-9][a-z0-9_-]*$')
+      - vless_agent_compose_project_name | length <= 63
+      - vless_agent_snapshot_volume == vless_agent_compose_project_name ~ '_agent-snapshot'
+      - vless_agent_snapshot_backup_retention | int > 0
+      - "'564dc521016cc7463f7e7870ceb159b60883cccb' not in vless_agent_compatible_rollback_revisions"
+      - vless_agent_reality_target | length > 0
+      - vless_agent_reality_server_name | length > 0
+      - vless_agent_reality_short_ids | length > 0
+    fail_msg: Required immutable deployment, TLS, firewall, and REALITY inputs are missing
+
+- name: Validate every central backend IPv4 source
+  ansible.builtin.assert:
+    that:
+      - item | vless_agent_unicast_ipv4
+    fail_msg: Management allowlist entries must be explicit unicast IPv4 addresses
+  loop: "{{ vless_agent_central_backend_ipv4_allowlist }}"
+
+- name: Resolve per-node Vault values
+  ansible.builtin.set_fact:
+    vless_agent_node_tokens: "{{ vault_vless_agent_tokens[inventory_hostname] }}"
+    vless_agent_token_current: "{{ vault_vless_agent_tokens[inventory_hostname].current | trim }}"
+    vless_agent_token_next: "{{ vault_vless_agent_tokens[inventory_hostname].next | default('') | trim }}"
+    vless_agent_reality_private_key: "{{ vault_reality_private_keys[inventory_hostname] }}"
+  no_log: true
+
+- name: Validate per-node Vault values and fleet token uniqueness
+  ansible.builtin.assert:
+    that:
+      - vless_agent_token_current | length >= 32
+      - vless_agent_token_next | length == 0 or vless_agent_token_next | length >= 32
+      - vless_agent_token_next | length == 0 or vless_agent_token_next != vless_agent_token_current
+      - vless_agent_reality_private_key | length > 0
+      - vault_vless_agent_tokens | vless_agent_all_node_tokens_unique
+    fail_msg: Each node requires unique current credentials and an optional distinct next token
+  no_log: true
+
+- name: Inspect persisted management port
+  ansible.builtin.stat:
+    path: "{{ vless_agent_management_port_state_path }}"
+  register: vless_management_port_state
+
+- name: Require safe persisted management port state
+  ansible.builtin.assert:
+    that:
+      - not vless_management_port_state.stat.exists or vless_management_port_state.stat.isreg
+      - not vless_management_port_state.stat.exists or not vless_management_port_state.stat.islnk
+      - not vless_management_port_state.stat.exists or vless_management_port_state.stat.pw_name == 'root'
+      - not vless_management_port_state.stat.exists or vless_management_port_state.stat.mode == '0600'
+    fail_msg: Persisted management port state must be a root-owned mode-0600 regular file
+  no_log: true
+
+- name: Read persisted management port
+  ansible.builtin.slurp:
+    src: "{{ vless_agent_management_port_state_path }}"
+  register: vless_management_port_state_content
+  when: vless_management_port_state.stat.exists
+  no_log: true
+
+- name: Resolve persisted management port state
+  ansible.builtin.set_fact:
+    vless_persisted_management_port: >-
+      {{ (vless_management_port_state_content.content | b64decode | trim)
+         if vless_management_port_state.stat.exists
+         else (vless_agent_management_port | string) }}
+  no_log: true
+
+- name: Reject uncoordinated management port change
+  ansible.builtin.assert:
+    that:
+      - vless_persisted_management_port is match('^[0-9]{1,5}$')
+      - vless_persisted_management_port | int > 0
+      - vless_persisted_management_port | int <= 65535
+      - vless_persisted_management_port == (vless_agent_management_port | string)
+    fail_msg: Existing management port differs; a separate reviewed migration is required
+  no_log: true
+
+- name: Install explicit runtime packages without auto-starting nginx
+  ansible.builtin.apt:
+    name: "{{ vless_agent_required_packages }}"
+    state: present
+    update_cache: true
+    policy_rc_d: 101
+
+- name: Enable Docker
+  ansible.builtin.service:
+    name: docker
+    enabled: true
+    state: started
+
+- name: Preflight Docker Compose runtime
+  ansible.builtin.command:
+    argv: [docker, compose, -p, "{{ vless_agent_compose_project_name }}", version]
+  changed_when: false
+
+- name: Inspect packaged nginx default listener
+  ansible.builtin.stat:
+    path: /etc/nginx/sites-enabled/default
+    follow: false
+  register: vless_packaged_nginx_default
+
+- name: Require packaged nginx default listener safety
+  ansible.builtin.assert:
+    that:
+      - vless_packaged_nginx_default.stat | vless_agent_safe_packaged_nginx_default
+    fail_msg: Refusing to remove an operator file or non-packaged nginx default link
+
+- name: Disable packaged nginx default listener symlink
+  ansible.builtin.file:
+    path: /etc/nginx/sites-enabled/default
+    state: absent
+  when: vless_packaged_nginx_default.stat.exists
+
+- name: Ensure private runtime directories exist
+  ansible.builtin.file:
+    path: "{{ item.path }}"
+    state: directory
+    owner: "{{ item.owner }}"
+    group: "{{ item.group }}"
+    mode: "{{ item.mode }}"
+  loop:
+    - {path: /etc/vless-agent, owner: root, group: root, mode: "0700"}
+    - {path: /etc/vless-agent/secrets, owner: "65532", group: "65532", mode: "0700"}
+    - {path: "{{ vless_agent_snapshot_backup_dir }}", owner: root, group: root, mode: "0700"}
+
+- name: Inspect existing checkout
+  ansible.builtin.stat:
+    path: "{{ vless_agent_deploy_dir }}/.git"
+  register: vless_agent_checkout
+
+- name: Check existing checkout cleanliness with git status --porcelain
+  ansible.builtin.command:
+    argv: [git, status, --porcelain]
+    chdir: "{{ vless_agent_deploy_dir }}"
+  register: vless_checkout_status
+  changed_when: false
+  when: vless_agent_checkout.stat.exists
+
+- name: Reject a dirty existing checkout
+  ansible.builtin.assert:
+    that:
+      - vless_checkout_status.stdout | length == 0
+    fail_msg: Existing deployment checkout is dirty; refusing to overwrite operator changes
+  when: vless_agent_checkout.stat.exists
+
+- name: Capture previous exact Git revision
+  ansible.builtin.command:
+    argv: [git, rev-parse, HEAD]
+    chdir: "{{ vless_agent_deploy_dir }}"
+  register: vless_agent_previous_revision_command
+  changed_when: false
+  when: vless_agent_checkout.stat.exists
+
+- name: Capture previous exact Git SHA
+  ansible.builtin.set_fact:
+    vless_previous_revision: "{{ vless_agent_previous_revision_command.stdout | default('') }}"
+    vless_agent_active_revision: "{{ deploy_revision }}"
+    vless_previous_compose_was_running: false
+
+- name: Capture previous Compose state
+  ansible.builtin.command:
+    argv: [docker, compose, -p, "{{ vless_agent_compose_project_name }}", ps, --format, json]
+    chdir: "{{ vless_agent_deploy_dir }}"
+  register: vless_previous_compose_state
+  changed_when: false
+  failed_when: false
+  when: vless_agent_checkout.stat.exists
+  no_log: true
+
+- name: Record whether previous Compose deployment was running
+  ansible.builtin.set_fact:
+    vless_previous_compose_was_running: >-
+      {{ vless_previous_compose_state.rc == 0 and
+         (vless_previous_compose_state.stdout | vless_agent_compose_runtime_was_running) }}
+  when: vless_agent_checkout.stat.exists
+  no_log: true
+
+- name: Inspect previous private deployment artifacts
+  ansible.builtin.stat:
+    path: "{{ item.path }}"
+  loop:
+    - {name: agent_env, path: "{{ vless_agent_env_path }}"}
+    - {name: reality_key, path: "{{ vless_agent_reality_key_path }}"}
+    - {name: nginx_config, path: "{{ vless_agent_nginx_config_path }}"}
+  register: vless_previous_artifact_stats
+  no_log: true
+
+- name: Index previous private deployment artifact metadata
+  ansible.builtin.set_fact:
+    vless_previous_agent_env_stat: "{{ vless_previous_artifact_stats.results[0].stat }}"
+    vless_previous_reality_key_stat: "{{ vless_previous_artifact_stats.results[1].stat }}"
+    vless_previous_nginx_stat: "{{ vless_previous_artifact_stats.results[2].stat }}"
+  no_log: true
+
+- name: Validate existing private deployment artifact safety
+  ansible.builtin.assert:
+    that:
+      - not item.stat.exists or (item.stat.isreg and not item.stat.islnk)
+      - not item.stat.exists or item.stat.mode == item.mode
+      - not item.stat.exists or item.stat.uid == item.uid
+    fail_msg: Existing deployment configuration artifact is absent or unsafe for rollback capture
+  loop:
+    - {stat: "{{ vless_previous_agent_env_stat }}", mode: "0600", uid: 0}
+    - {stat: "{{ vless_previous_reality_key_stat }}", mode: "0600", uid: 65532}
+    - {stat: "{{ vless_previous_nginx_stat }}", mode: "0644", uid: 0}
+  no_log: true
+
+- name: Capture previous private agent environment
+  ansible.builtin.slurp:
+    src: "{{ vless_agent_env_path }}"
+  register: vless_previous_agent_env
+  when: vless_previous_agent_env_stat.exists
+  no_log: true
+
+- name: Capture previous REALITY key
+  ansible.builtin.slurp:
+    src: "{{ vless_agent_reality_key_path }}"
+  register: vless_previous_reality_key
+  when: vless_previous_reality_key_stat.exists
+  no_log: true
+
+- name: Capture previous nginx virtual host
+  ansible.builtin.slurp:
+    src: "{{ vless_agent_nginx_config_path }}"
+  register: vless_previous_nginx_config
+  when: vless_previous_nginx_stat.exists
+  no_log: true
+
+- name: Record previous configuration artifact availability
+  ansible.builtin.set_fact:
+    vless_previous_config_artifacts_available: >-
+      {{ vless_previous_agent_env_stat.exists and
+         vless_previous_reality_key_stat.exists and
+         vless_previous_nginx_stat.exists }}
+  no_log: true
+
+- name: Decode previous configuration privately
+  ansible.builtin.set_fact:
+    vless_previous_agent_env_text: "{{ vless_previous_agent_env.content | b64decode }}"
+    vless_previous_nginx_text: "{{ vless_previous_nginx_config.content | b64decode }}"
+  when: vless_previous_config_artifacts_available
+  no_log: true
+
+- name: Extract previous rollback health coordinates privately
+  ansible.builtin.set_fact:
+    vless_previous_agent_token_current: "{{ vless_previous_agent_env_text | regex_findall('(?m)^AGENT_TOKEN_CURRENT=([^\\r\\n]+)$') | first }}"
+    vless_previous_agent_domain: "{{ vless_previous_nginx_text | regex_findall('(?m)^\\s*server_name\\s+([^;\\s]+)\\s*;') | first }}"
+    vless_previous_management_port: "{{ vless_previous_nginx_text | regex_findall('(?m)^\\s*listen\\s+0\\.0\\.0\\.0:([0-9]+)\\s+ssl;') | first }}"
+  when: vless_previous_config_artifacts_available
+  no_log: true
+
+- name: Require prior nginx port to match persisted state
+  ansible.builtin.assert:
+    that:
+      - vless_previous_management_port == vless_persisted_management_port
+    fail_msg: Previous nginx listener disagrees with persisted management port state
+  when: vless_previous_config_artifacts_available
+  no_log: true
+
+- name: Inspect TLS certificate
+  ansible.builtin.stat:
+    path: "{{ vless_agent_tls_certificate_path }}"
+  register: vless_agent_tls_cert_stat
+
+- name: Inspect TLS private key
+  ansible.builtin.stat:
+    path: "{{ vless_agent_tls_private_key_path }}"
+  register: vless_agent_tls_key_stat
+  no_log: true
+
+- name: Require safe out-of-band TLS files
+  ansible.builtin.assert:
+    that:
+      - vless_agent_tls_cert_stat.stat.exists
+      - vless_agent_tls_cert_stat.stat.isreg
+      - not vless_agent_tls_cert_stat.stat.islnk
+      - vless_agent_tls_cert_stat.stat.pw_name == 'root'
+      - vless_agent_tls_cert_stat.stat.mode is match('^0[0-7][0145][0145]$')
+      - vless_agent_tls_key_stat.stat.exists
+      - vless_agent_tls_key_stat.stat.isreg
+      - not vless_agent_tls_key_stat.stat.islnk
+      - vless_agent_tls_key_stat.stat.mode in ['0400', '0600']
+      - vless_agent_tls_key_stat.stat.pw_name == 'root'
+    fail_msg: TLS certificate/key must be regular out-of-band files and the key must be private
+  no_log: true
+
+- name: Check TLS certificate validity window with openssl x509 -checkend
+  ansible.builtin.command:
+    argv:
+      - openssl
+      - x509
+      - -checkend
+      - "{{ vless_agent_tls_minimum_validity_seconds }}"
+      - -noout
+      - -in
+      - "{{ vless_agent_tls_certificate_path }}"
+  changed_when: false
+
+- name: Check TLS certificate hostname with openssl x509 -checkhost
+  ansible.builtin.command:
+    argv:
+      - openssl
+      - x509
+      - -checkhost
+      - "{{ vless_agent_domain }}"
+      - -noout
+      - -in
+      - "{{ vless_agent_tls_certificate_path }}"
+  changed_when: false
+
+- name: Certificate and private key must match
+  ansible.builtin.shell: |
+    set -eu
+    cert_pub="$(mktemp)"
+    key_pub="$(mktemp)"
+    trap 'rm -f "$cert_pub" "$key_pub"' EXIT
+    openssl x509 -in "{{ vless_agent_tls_certificate_path }}" -pubkey -noout >"$cert_pub"
+    openssl pkey -in "{{ vless_agent_tls_private_key_path }}" -pubout >"$key_pub"
+    cmp -s "$cert_pub" "$key_pub"
+  args:
+    executable: /bin/bash
+  changed_when: false
+  no_log: true
+
+- name: Install management firewall script
+  ansible.builtin.template:
+    src: vless-agent-firewall.sh.j2
+    dest: /usr/local/sbin/vless-agent-firewall
+    owner: root
+    group: root
+    mode: "0700"
+  register: vless_agent_firewall_script
+
+- name: Install management firewall unit
+  ansible.builtin.template:
+    src: vless-agent-firewall.service.j2
+    dest: /etc/systemd/system/vless-agent-firewall.service
+    owner: root
+    group: root
+    mode: "0644"
+  register: vless_agent_firewall_unit
+
+- name: Enable management firewall before external TLS listener
+  ansible.builtin.systemd_service:
+    name: vless-agent-firewall.service
+    enabled: true
+    state: started
+    daemon_reload: true
+
+- name: Reload management firewall atomically
+  ansible.builtin.systemd_service:
+    name: vless-agent-firewall.service
+    state: reloaded
+  when: vless_agent_firewall_script.changed or vless_agent_firewall_unit.changed
+
+- name: Inspect named agent-snapshot volume before changing code
+  ansible.builtin.command:
+    argv: [docker, volume, inspect, --format, "{{ '{{ .Mountpoint }}' }}", "{{ vless_agent_snapshot_volume }}"]
+  register: vless_agent_snapshot_mount
+  changed_when: false
+  failed_when: false
+  no_log: true
+
+- name: Inspect current durable snapshot
+  ansible.builtin.stat:
+    path: "{{ vless_agent_snapshot_mount.stdout }}/snapshot.json"
+  register: vless_agent_snapshot_stat
+  when: vless_agent_snapshot_mount.rc == 0
+  no_log: true
+
+- name: Back up current snapshot privately
+  ansible.builtin.copy:
+    src: "{{ vless_agent_snapshot_mount.stdout }}/snapshot.json"
+    dest: "{{ vless_agent_snapshot_backup_dir }}/snapshot-{{ ansible_date_time.iso8601_basic_short }}.json"
+    remote_src: true
+    owner: root
+    group: root
+    mode: "0600"
+  when:
+    - vless_agent_snapshot_mount.rc == 0
+    - vless_agent_snapshot_stat.stat.exists | default(false)
+  no_log: true
+
+- name: Find private snapshot backups for bounded retention
+  ansible.builtin.find:
+    paths: "{{ vless_agent_snapshot_backup_dir }}"
+    patterns: snapshot-*.json
+    file_type: file
+    age_stamp: mtime
+  register: vless_agent_snapshot_backups
+  no_log: true
+
+- name: Remove snapshot backups beyond retention
+  ansible.builtin.file:
+    path: "{{ item.path }}"
+    state: absent
+  loop: "{{ (vless_agent_snapshot_backups.files | sort(attribute='mtime', reverse=true))[vless_agent_snapshot_backup_retention | int:] }}"
+  no_log: true
+
+- name: Initialize candidate mutation flags
+  ansible.builtin.set_fact:
+    vless_candidate_compose_may_have_started: false
+    vless_candidate_nginx_may_have_loaded: false
+
+- name: Deploy exact revision with compatible automatic rollback
+  block:
+    - name: Checkout only the requested exact revision
+      ansible.builtin.git:
+        repo: "{{ vless_agent_repo_url }}"
+        dest: "{{ vless_agent_deploy_dir }}"
+        version: "{{ deploy_revision }}"
+        update: true
+        force: false
+
+    - name: Verify checked out revision is exact
+      ansible.builtin.command:
+        argv: [git, rev-parse, HEAD]
+        chdir: "{{ vless_agent_deploy_dir }}"
+      register: vless_agent_checked_out_revision
+      changed_when: false
+      failed_when: vless_agent_checked_out_revision.stdout != deploy_revision
+
+    - name: Render node REALITY key file
+      ansible.builtin.copy:
+        content: "{{ vless_agent_reality_private_key }}"
+        dest: "{{ vless_agent_reality_key_path }}"
+        owner: "65532"
+        group: "65532"
+        mode: "0600"
+      no_log: true
+
+    - name: Render private agent environment
+      ansible.builtin.template:
+        src: agent.env.j2
+        dest: "{{ vless_agent_env_path }}"
+        owner: root
+        group: root
+        mode: "0600"
+      no_log: true
+
+    - name: Validate exact production Compose configuration
+      ansible.builtin.command:
+        argv: [docker, compose, -p, "{{ vless_agent_compose_project_name }}", --env-file, "{{ vless_agent_env_path }}", -f, docker-compose.yml, config, --quiet]
+        chdir: "{{ vless_agent_deploy_dir }}"
+      changed_when: false
+      no_log: true
+
+    - name: Read rendered Compose structure without exposing environment
+      ansible.builtin.command:
+        argv: [docker, compose, -p, "{{ vless_agent_compose_project_name }}", --env-file, "{{ vless_agent_env_path }}", -f, docker-compose.yml, config, --format, json]
+        chdir: "{{ vless_agent_deploy_dir }}"
+      register: vless_agent_compose_json
+      changed_when: false
+      no_log: true
+
+    - name: Parse rendered Compose structure privately
+      ansible.builtin.set_fact:
+        vless_agent_compose_config: "{{ vless_agent_compose_json.stdout | from_json }}"
+      no_log: true
+
+    - name: Require immutable runtime and durable deployment boundaries
+      ansible.builtin.assert:
+        that:
+          - vless_agent_compose_config | vless_agent_valid_rendered_topology(vless_agent_snapshot_volume)
+        fail_msg: Rendered Compose must retain the exact private topology, Xray digest, and snapshot volume
+      no_log: true
+
+    - name: Collect host IPv4 interface networks
+      ansible.builtin.command:
+        argv: [ip, -j, -4, address, show]
+      register: vless_agent_host_ipv4_addresses_json
+      changed_when: false
+      no_log: true
+
+    - name: Collect host IPv4 routes
+      ansible.builtin.command:
+        argv: [ip, -j, -4, route, show, table, all]
+      register: vless_agent_host_ipv4_routes_json
+      changed_when: false
+      no_log: true
+
+    - name: List Docker networks for overlap inspection
+      ansible.builtin.command:
+        argv: [docker, network, ls, --quiet, --no-trunc]
+      register: vless_agent_docker_network_ids
+      changed_when: false
+      no_log: true
+
+    - name: Require canonical Docker network identifiers
+      ansible.builtin.assert:
+        that:
+          - item is match('^[0-9a-f]{64}$')
+        fail_msg: Docker network listing returned malformed inspection data
+      loop: "{{ vless_agent_docker_network_ids.stdout_lines }}"
+      no_log: true
+
+    - name: Inspect every Docker network
+      ansible.builtin.command:
+        argv: "{{ ['docker', 'network', 'inspect'] + vless_agent_docker_network_ids.stdout_lines }}"
+      register: vless_agent_docker_networks_json
+      changed_when: false
+      when: vless_agent_docker_network_ids.stdout_lines | length > 0
+      no_log: true
+
+    - name: List every existing Docker container
+      ansible.builtin.command:
+        argv: [docker, container, ls, --all, --quiet, --no-trunc]
+      register: vless_agent_existing_container_ids
+      changed_when: false
+      no_log: true
+
+    - name: Require canonical existing container identifiers
+      ansible.builtin.assert:
+        that:
+          - item is match('^[0-9a-f]{64}$')
+        fail_msg: Docker container listing returned malformed inspection data
+      loop: "{{ vless_agent_existing_container_ids.stdout_lines }}"
+      no_log: true
+
+    - name: Inspect every existing Docker container
+      ansible.builtin.command:
+        argv: "{{ ['docker', 'container', 'inspect'] + vless_agent_existing_container_ids.stdout_lines }}"
+      register: vless_agent_existing_containers_json
+      changed_when: false
+      when: vless_agent_existing_container_ids.stdout_lines | length > 0
+      no_log: true
+
+    - name: Parse host and Docker network inspection privately
+      ansible.builtin.set_fact:
+        vless_agent_host_ipv4_addresses: "{{ vless_agent_host_ipv4_addresses_json.stdout | from_json }}"
+        vless_agent_host_ipv4_routes: "{{ vless_agent_host_ipv4_routes_json.stdout | from_json }}"
+        vless_agent_docker_networks: >-
+          {{ (vless_agent_docker_networks_json.stdout | from_json)
+             if vless_agent_docker_network_ids.stdout_lines | length > 0
+             else [] }}
+        vless_agent_existing_containers: >-
+          {{ (vless_agent_existing_containers_json.stdout | from_json)
+             if vless_agent_existing_container_ids.stdout_lines | length > 0
+             else [] }}
+      no_log: true
+
+    - name: Reject host or Docker management network conflicts
+      ansible.builtin.assert:
+        that:
+          - vless_agent_host_ipv4_addresses | vless_agent_network_preflight_safe(vless_agent_host_ipv4_routes, vless_agent_docker_networks, vless_agent_existing_containers, vless_agent_compose_project_name)
+        fail_msg: Refusing to start Compose because the reserved management network overlaps or has drifted
+      no_log: true
+
+    - name: Mark candidate Compose as possibly started
+      ansible.builtin.set_fact:
+        vless_candidate_compose_may_have_started: true
+
+    - name: Replace services while preserving named snapshot volume
+      ansible.builtin.command:
+        argv: [docker, compose, -p, "{{ vless_agent_compose_project_name }}", --env-file, "{{ vless_agent_env_path }}", -f, docker-compose.yml, up, -d, --build, --remove-orphans]
+        chdir: "{{ vless_agent_deploy_dir }}"
+      no_log: true
+
+    - name: Resolve running Xray container identifier
+      ansible.builtin.command:
+        argv: [docker, compose, -p, "{{ vless_agent_compose_project_name }}", --env-file, "{{ vless_agent_env_path }}", -f, docker-compose.yml, ps, --quiet, xray]
+        chdir: "{{ vless_agent_deploy_dir }}"
+      register: vless_agent_xray_container_id
+      changed_when: false
+      no_log: true
+
+    - name: Resolve running agent container identifier
+      ansible.builtin.command:
+        argv: [docker, compose, -p, "{{ vless_agent_compose_project_name }}", --env-file, "{{ vless_agent_env_path }}", -f, docker-compose.yml, ps, --quiet, agent]
+        chdir: "{{ vless_agent_deploy_dir }}"
+      register: vless_agent_agent_container_id
+      changed_when: false
+      no_log: true
+
+    - name: Require unambiguous running container identifiers
+      ansible.builtin.assert:
+        that:
+          - vless_agent_xray_container_id.stdout is match('^[0-9a-f]{64}$')
+          - vless_agent_agent_container_id.stdout is match('^[0-9a-f]{64}$')
+        fail_msg: Compose did not return exact running Xray and agent containers
+      no_log: true
+
+    - name: Inspect running management network
+      ansible.builtin.command:
+        argv: [docker, network, inspect, "{{ vless_agent_compose_project_name }}_management"]
+      register: vless_agent_running_network_json
+      changed_when: false
+      no_log: true
+
+    - name: Inspect running Xray container
+      ansible.builtin.command:
+        argv: [docker, container, inspect, "{{ vless_agent_xray_container_id.stdout }}"]
+      register: vless_agent_running_xray_json
+      changed_when: false
+      no_log: true
+
+    - name: Inspect running agent container
+      ansible.builtin.command:
+        argv: [docker, container, inspect, "{{ vless_agent_agent_container_id.stdout }}"]
+      register: vless_agent_running_agent_json
+      changed_when: false
+      no_log: true
+
+    - name: Parse running topology privately
+      ansible.builtin.set_fact:
+        vless_agent_running_network: "{{ vless_agent_running_network_json.stdout | from_json }}"
+        vless_agent_running_xray: "{{ vless_agent_running_xray_json.stdout | from_json }}"
+        vless_agent_running_agent: "{{ vless_agent_running_agent_json.stdout | from_json }}"
+      no_log: true
+
+    - name: Require exact running management topology
+      ansible.builtin.assert:
+        that:
+          - vless_agent_running_network | vless_agent_valid_runtime_topology(vless_agent_running_xray, vless_agent_running_agent, vless_agent_compose_project_name)
+        fail_msg: Running Docker topology differs from the reviewed private management bridge
+      no_log: true
+
+    - name: Verify authenticated direct bridge health
+      ansible.builtin.uri:
+        url: http://172.31.255.3:8000/api/v1/health
+        method: GET
+        use_proxy: false
+        return_content: true
+        headers:
+          Authorization: Bearer {{ vless_agent_token_current }}
+          X-Agent-Contract-Version: v1
+      register: vless_agent_direct_health
+      retries: 12
+      delay: 5
+      until:
+        - vless_agent_direct_health.status == 200
+        - vless_agent_direct_health.json.agent_sha == vless_agent_active_revision
+        - vless_agent_direct_health.json.contract_version == 'v1'
+        - vless_agent_direct_health.json.schema_version == '1.0'
+        - vless_agent_direct_health.json.xray_version == '26.7.11'
+        - vless_agent_direct_health.json.xray_image_digest == 'sha256:a1644183accdb0b5be967093fe34be756fd5de15fe2ee0206e842ae17350967f'
+        - vless_agent_direct_health.json.readiness in ['READY', 'RECOVERY_READY', 'NOT_READY']
+      no_log: true
+
+    - name: Install nginx TLS virtual host
+      ansible.builtin.template:
+        src: vless-agent.nginx.conf.j2
+        dest: "{{ vless_agent_nginx_config_path }}"
+        owner: root
+        group: root
+        mode: "0644"
+
+    - name: Validate nginx configuration
+      ansible.builtin.command:
+        argv: [nginx, -t]
+      changed_when: false
+
+    - name: Inspect effective nginx configuration
+      ansible.builtin.command:
+        argv: [nginx, -T]
+      register: vless_agent_effective_nginx
+      changed_when: false
+      no_log: true
+
+    - name: Parse effective nginx listeners privately
+      ansible.builtin.set_fact:
+        vless_agent_effective_nginx_listeners: >-
+          {{ vless_agent_effective_nginx.stdout | vless_agent_nginx_listeners }}
+      no_log: true
+
+    - name: Require exactly one effective HTTPS listener
+      ansible.builtin.assert:
+        that:
+          - vless_agent_effective_nginx_listeners == ['0.0.0.0:' ~ (vless_agent_management_port | string) ~ ' ssl']
+        fail_msg: Effective nginx configuration must contain only the managed IPv4 TLS listener
+      no_log: true
+
+    - name: Mark candidate nginx as possibly loaded
+      ansible.builtin.set_fact:
+        vless_candidate_nginx_may_have_loaded: true
+
+    - name: Start nginx after firewall is active
+      ansible.builtin.service:
+        name: nginx
+        enabled: true
+        state: started
+
+    - name: Reload nginx TLS configuration
+      ansible.builtin.service:
+        name: nginx
+        state: reloaded
+
+    - name: Verify authenticated HTTPS health
+      ansible.builtin.uri:
+        url: "https://{{ vless_agent_domain }}:{{ vless_agent_management_port }}/api/v1/health"
+        method: GET
+        validate_certs: true
+        use_proxy: false
+        return_content: true
+        headers:
+          Authorization: Bearer {{ vless_agent_token_current }}
+          X-Agent-Contract-Version: v1
+      register: vless_agent_health
+      retries: 12
+      delay: 5
+      until:
+        - vless_agent_health.status == 200
+        - vless_agent_health.json.agent_sha == vless_agent_active_revision
+        - vless_agent_health.json.contract_version == 'v1'
+        - vless_agent_health.json.schema_version == '1.0'
+        - vless_agent_health.json.xray_version == '26.7.11'
+        - vless_agent_health.json.xray_image_digest == 'sha256:a1644183accdb0b5be967093fe34be756fd5de15fe2ee0206e842ae17350967f'
+        - vless_agent_health.json.readiness in ['READY', 'RECOVERY_READY', 'NOT_READY']
+      no_log: true
+
+    - name: Persist successful management port
+      ansible.builtin.copy:
+        content: "{{ vless_agent_management_port }}\n"
+        dest: "{{ vless_agent_management_port_state_path }}"
+        owner: root
+        group: root
+        mode: "0600"
+      no_log: true
+
+  rescue:
+    - name: Determine whether compatible automatic rollback is possible
+      ansible.builtin.set_fact:
+        vless_agent_can_rollback: >-
+          {{ vless_previous_revision is match('^[0-9a-f]{40}$') and
+             vless_previous_revision in vless_agent_compatible_rollback_revisions and
+             vless_previous_config_artifacts_available and
+             vless_previous_compose_was_running }}
+      no_log: true
+
+    - name: Stop candidate Compose project containers without deleting volumes
+      ansible.builtin.shell: |
+        set -eu
+        container_ids="$(docker ps -q --filter 'label=com.docker.compose.project={{ vless_agent_compose_project_name }}')"
+        if [ -n "$container_ids" ]; then
+          docker stop $container_ids >/dev/null
+        fi
+      args:
+        executable: /bin/bash
+      when:
+        - not vless_agent_can_rollback
+        - vless_candidate_compose_may_have_started
+      no_log: true
+
+    - name: Stop nginx when candidate configuration may have loaded
+      ansible.builtin.service:
+        name: nginx
+        state: stopped
+      when:
+        - not vless_agent_can_rollback
+        - vless_candidate_nginx_may_have_loaded
+
+    - name: Restore captured agent environment without compatible rollback
+      ansible.builtin.copy:
+        content: "{{ vless_previous_agent_env.content | b64decode }}"
+        dest: "{{ vless_agent_env_path }}"
+        owner: root
+        group: root
+        mode: "0600"
+      when:
+        - not vless_agent_can_rollback
+        - vless_previous_agent_env_stat.exists
+      no_log: true
+
+    - name: Restore captured REALITY key without compatible rollback
+      ansible.builtin.copy:
+        content: "{{ vless_previous_reality_key.content | b64decode }}"
+        dest: "{{ vless_agent_reality_key_path }}"
+        owner: "65532"
+        group: "65532"
+        mode: "0600"
+      when:
+        - not vless_agent_can_rollback
+        - vless_previous_reality_key_stat.exists
+      no_log: true
+
+    - name: Restore captured nginx configuration without compatible rollback
+      ansible.builtin.copy:
+        content: "{{ vless_previous_nginx_config.content | b64decode }}"
+        dest: "{{ vless_agent_nginx_config_path }}"
+        owner: root
+        group: root
+        mode: "0644"
+      when:
+        - not vless_agent_can_rollback
+        - vless_previous_nginx_stat.exists
+      no_log: true
+
+    - name: Remove candidate nginx configuration without prior artifact
+      ansible.builtin.file:
+        path: "{{ vless_agent_nginx_config_path }}"
+        state: absent
+      when:
+        - not vless_agent_can_rollback
+        - not vless_previous_nginx_stat.exists
+
+    - name: Explain first-install or incompatible rollback refusal
+      ansible.builtin.fail:
+        msg: >-
+          No automatic rollback is possible on a first install, without a captured
+          running Compose deployment and all prior configuration artifacts, or when
+          the previous exact SHA is absent from the compatible list. Snapshot state
+          and its private backup were preserved; manual schema downgrade is forbidden.
+      when: not vless_agent_can_rollback
+
+    - name: Restore compatible previous exact checkout
+      ansible.builtin.git:
+        repo: "{{ vless_agent_repo_url }}"
+        dest: "{{ vless_agent_deploy_dir }}"
+        version: "{{ vless_previous_revision }}"
+        update: true
+        force: false
+      when: vless_agent_can_rollback
+
+    - name: Select previous revision for rollback environment
+      ansible.builtin.set_fact:
+        vless_agent_active_revision: "{{ vless_previous_revision }}"
+        vless_agent_firewall_active_port: "{{ vless_previous_management_port }}"
+      when: vless_agent_can_rollback
+
+    - name: Restore previous private agent environment
+      ansible.builtin.copy:
+        content: "{{ vless_previous_agent_env.content | b64decode }}"
+        dest: "{{ vless_agent_env_path }}"
+        owner: root
+        group: root
+        mode: "0600"
+      when: vless_agent_can_rollback
+      no_log: true
+
+    - name: Restore previous REALITY key
+      ansible.builtin.copy:
+        content: "{{ vless_previous_reality_key.content | b64decode }}"
+        dest: "{{ vless_agent_reality_key_path }}"
+        owner: "65532"
+        group: "65532"
+        mode: "0600"
+      when: vless_agent_can_rollback
+      no_log: true
+
+    - name: Restore previous nginx virtual host
+      ansible.builtin.copy:
+        content: "{{ vless_previous_nginx_config.content | b64decode }}"
+        dest: "{{ vless_agent_nginx_config_path }}"
+        owner: root
+        group: root
+        mode: "0644"
+      when: vless_agent_can_rollback
+      no_log: true
+
+    - name: Restore previous management firewall configuration
+      ansible.builtin.template:
+        src: vless-agent-firewall.sh.j2
+        dest: /usr/local/sbin/vless-agent-firewall
+        owner: root
+        group: root
+        mode: "0700"
+      when: vless_agent_can_rollback
+
+    - name: Reload previous management firewall configuration
+      ansible.builtin.systemd_service:
+        name: vless-agent-firewall.service
+        state: reloaded
+      when: vless_agent_can_rollback
+
+    - name: Validate restored nginx configuration
+      ansible.builtin.command:
+        argv: [nginx, -t]
+      changed_when: false
+      when: vless_agent_can_rollback
+
+    - name: Inspect restored effective nginx configuration
+      ansible.builtin.command:
+        argv: [nginx, -T]
+      register: vless_agent_restored_nginx
+      changed_when: false
+      when: vless_agent_can_rollback
+      no_log: true
+
+    - name: Parse restored effective nginx listeners privately
+      ansible.builtin.set_fact:
+        vless_agent_restored_nginx_listeners: >-
+          {{ vless_agent_restored_nginx.stdout | vless_agent_nginx_listeners }}
+      when: vless_agent_can_rollback
+      no_log: true
+
+    - name: Require restored host-wide HTTPS-only listener
+      ansible.builtin.assert:
+        that:
+          - vless_agent_restored_nginx_listeners == ['0.0.0.0:' ~ vless_previous_management_port ~ ' ssl']
+        fail_msg: Restored nginx configuration contains an unexpected listener
+      when: vless_agent_can_rollback
+      no_log: true
+
+    - name: Reload restored nginx configuration
+      ansible.builtin.service:
+        name: nginx
+        state: reloaded
+      when: vless_agent_can_rollback
+
+    - name: Restart compatible previous revision using the same snapshot volume
+      ansible.builtin.command:
+        argv: [docker, compose, -p, "{{ vless_agent_compose_project_name }}", --env-file, "{{ vless_agent_env_path }}", -f, docker-compose.yml, up, -d, --build, --remove-orphans]
+        chdir: "{{ vless_agent_deploy_dir }}"
+      when: vless_agent_can_rollback
+      no_log: true
+
+    - name: Verify rolled back HTTPS health
+      ansible.builtin.uri:
+        url: "https://{{ vless_previous_agent_domain }}:{{ vless_previous_management_port }}/api/v1/health"
+        method: GET
+        validate_certs: true
+        use_proxy: false
+        return_content: true
+        headers:
+          Authorization: Bearer {{ vless_previous_agent_token_current }}
+          X-Agent-Contract-Version: v1
+      register: vless_agent_rollback_health
+      retries: 12
+      delay: 5
+      until:
+        - vless_agent_rollback_health.status == 200
+        - vless_agent_rollback_health.json.agent_sha == vless_agent_active_revision
+        - vless_agent_rollback_health.json.contract_version == 'v1'
+        - vless_agent_rollback_health.json.schema_version == '1.0'
+        - vless_agent_rollback_health.json.xray_version == '26.7.11'
+        - vless_agent_rollback_health.json.xray_image_digest == 'sha256:a1644183accdb0b5be967093fe34be756fd5de15fe2ee0206e842ae17350967f'
+        - vless_agent_rollback_health.json.readiness in ['READY', 'RECOVERY_READY', 'NOT_READY']
+      when: vless_agent_can_rollback
+      no_log: true
+
+    - name: Restore persisted previous management port
+      ansible.builtin.copy:
+        content: "{{ vless_previous_management_port }}\n"
+        dest: "{{ vless_agent_management_port_state_path }}"
+        owner: root
+        group: root
+        mode: "0600"
+      when: vless_agent_can_rollback
+      no_log: true
+
+    - name: Fail deployment after successful compatible rollback
+      ansible.builtin.fail:
+        msg: Requested revision failed; the declared compatible previous SHA was restored and verified
+      when: vless_agent_can_rollback

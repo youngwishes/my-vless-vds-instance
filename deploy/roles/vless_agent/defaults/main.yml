@@ -1,0 +1,32 @@
+---
+vless_agent_repo_url: ""
+vless_agent_deploy_dir: /opt/vless-agent
+vless_agent_env_path: /etc/vless-agent/agent.env
+vless_agent_reality_key_path: /etc/vless-agent/secrets/reality_private_key
+vless_agent_tls_certificate_path: /etc/vless-agent/tls/fullchain.pem
+vless_agent_tls_private_key_path: /etc/vless-agent/tls/private.key
+vless_agent_nginx_config_path: /etc/nginx/sites-enabled/vless-agent.conf
+vless_agent_domain: "{{ inventory_hostname }}"
+vless_agent_port: 8000
+vless_agent_management_port: 8443
+vless_agent_management_port_state_path: /etc/vless-agent/management-port
+vless_agent_public_port: 443
+vless_agent_tls_minimum_validity_seconds: 604800
+vless_agent_central_backend_ipv4_allowlist: []
+vless_agent_compose_project_name: vless-agent
+vless_agent_snapshot_volume: "{{ vless_agent_compose_project_name }}_agent-snapshot"
+vless_agent_snapshot_backup_dir: /var/backups/vless-agent
+vless_agent_snapshot_backup_retention: 7
+vless_agent_compatible_rollback_revisions: []
+vless_agent_reality_target: ""
+vless_agent_reality_server_name: ""
+vless_agent_reality_short_ids: ""
+vless_agent_required_packages:
+  - docker.io
+  - docker-compose-plugin
+  - git
+  - nginx
+  - openssl
+  - iptables
+vless_agent_xray_version: 26.7.11
+vless_agent_xray_digest: sha256:a1644183accdb0b5be967093fe34be756fd5de15fe2ee0206e842ae17350967f
