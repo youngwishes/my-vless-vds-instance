@@ -407,9 +407,16 @@ def _expected_network() -> dict[str, object]:
     return {
         "Name": "vless-agent_management",
         "Id": "abcdef0123456789",
+        "Scope": "local",
         "Driver": "bridge",
+        "EnableIPv4": True,
+        "EnableIPv6": False,
         "Options": {},
         "Internal": True,
+        "Attachable": False,
+        "Ingress": False,
+        "ConfigFrom": {"Network": ""},
+        "ConfigOnly": False,
         "Labels": {
             "com.docker.compose.project": "vless-agent",
             "com.docker.compose.network": "management",
@@ -421,6 +428,17 @@ def _expected_network() -> dict[str, object]:
         },
         "Containers": {},
     }
+
+
+_DOCKER_29_BRIDGE_METADATA_DRIFTS = (
+    lambda value: value.update(Scope="swarm"),
+    lambda value: value.update(EnableIPv4=False),
+    lambda value: value.update(EnableIPv6=True),
+    lambda value: value.update(Attachable=True),
+    lambda value: value.update(Ingress=True),
+    lambda value: value.update(ConfigFrom={"Network": "other"}),
+    lambda value: value.update(ConfigOnly=True),
+)
 
 
 def _canonical_builtin_network(*, name: str, driver: str) -> dict[str, object]:
@@ -575,6 +593,17 @@ def test_network_preflight_accepts_docker_29_normalized_bridge_inspect(
     routes = [{"dst": MANAGEMENT_SUBNET, "dev": "br-abcdef012345"}]
 
     assert validator(addresses, routes, [network], [], "vless-agent")
+
+
+@pytest.mark.parametrize("mutate", _DOCKER_29_BRIDGE_METADATA_DRIFTS)
+def test_network_preflight_rejects_docker_29_bridge_metadata_drift(
+    mutate: object,
+) -> None:
+    validator = _load_role_filters()["vless_agent_network_preflight_safe"]
+    network = _expected_network()
+    mutate(network)
+
+    assert not validator([], [], [network], [], "vless-agent")
 
 
 @pytest.mark.parametrize("ipam_options", [None, {}])
@@ -924,6 +953,17 @@ def test_runtime_topology_accepts_docker_29_normalized_bridge_inspect(
     network[0]["IPAM"]["Options"] = ipam_options
 
     assert validator(network, xray, agent, "vless-agent")
+
+
+@pytest.mark.parametrize("mutate", _DOCKER_29_BRIDGE_METADATA_DRIFTS)
+def test_runtime_topology_rejects_docker_29_bridge_metadata_drift(
+    mutate: object,
+) -> None:
+    validator = _load_role_filters()["vless_agent_valid_runtime_topology"]
+    network, xray, agent = _runtime_inspection()
+    mutate(network[0])
+
+    assert not validator(network, xray, agent, "vless-agent")
 
 
 @pytest.mark.parametrize("empty_ports", [None, {}, {"8000/tcp": None}])

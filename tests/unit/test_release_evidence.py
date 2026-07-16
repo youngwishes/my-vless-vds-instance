@@ -353,6 +353,29 @@ def test_rejects_if_local_compatibility_matrix_does_not_contain_reviewed_bootstr
     assert str(caught.value) == "runtime.rollback_compatibility_file:content"
 
 
+def test_rejects_if_reviewed_bootstrap_row_has_changed_downgrade_gate(
+    tmp_path: Path,
+) -> None:
+    compatibility = tmp_path / "COMPATIBILITY.md"
+    compatibility.write_text(
+        "| contract v1 | snapshot schema 1.0 | 26.7.11 / "
+        f"`{XRAY_DIGEST}` | `{BOOTSTRAP_SHA}` | "
+        "backend speaks contract v1 and canonical snapshot schema 1.0 | "
+        "test-first verified health and reconcile, then serial rollout | "
+        "NOT COMPATIBLE |\n",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(EvidenceValidationError) as caught:
+        validate_release_evidence(
+            valid_evidence(),
+            expected_head=HEAD,
+            compatibility_path=compatibility,
+        )
+
+    assert str(caught.value) == "runtime.rollback_compatibility_file:content"
+
+
 def test_cli_accepts_valid_bounded_evidence(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:

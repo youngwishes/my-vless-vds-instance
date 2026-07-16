@@ -157,7 +157,11 @@ def _validate_compatibility(path: Path) -> None:
         _fail("runtime.rollback_compatibility_file", "content")
     reviewed_row = (
         "| contract v1 | snapshot schema 1.0 | "
-        f"{_XRAY_VERSION} / `{_XRAY_IMAGE_DIGEST}` | `{_BOOTSTRAP_AGENT_SHA}` |"
+        f"{_XRAY_VERSION} / `{_XRAY_IMAGE_DIGEST}` | `{_BOOTSTRAP_AGENT_SHA}` | "
+        "backend speaks contract v1 and canonical snapshot schema 1.0 | "
+        "test-first verified health and reconcile, then serial rollout | "
+        "A-010 direct-bridge bootstrap; compatible direct-bridge rollback with "
+        "rehearsal and forward redeploy evidence |"
     )
     if text.count(reviewed_row) != 1:
         _fail("runtime.rollback_compatibility_file", "content")

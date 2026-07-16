@@ -176,7 +176,12 @@ def _expected_network_bridge(
     expected_name = f"{expected_project}_management"
     labels = network.get("Labels")
     ipam = network.get("IPAM")
-    if not isinstance(labels, Mapping) or not isinstance(ipam, Mapping):
+    config_from = network.get("ConfigFrom")
+    if (
+        not isinstance(labels, Mapping)
+        or not isinstance(ipam, Mapping)
+        or not isinstance(config_from, Mapping)
+    ):
         return None
     ipam_options = ipam.get("Options")
     if (
@@ -216,7 +221,14 @@ def _expected_network_bridge(
     if (
         network.get("Name") != expected_name
         or network.get("Driver") != "bridge"
+        or network.get("Scope") != "local"
+        or network.get("EnableIPv4") is not True
+        or network.get("EnableIPv6") is not False
         or network.get("Internal") is not True
+        or network.get("Attachable") is not False
+        or network.get("Ingress") is not False
+        or dict(config_from) != {"Network": ""}
+        or network.get("ConfigOnly") is not False
         or labels.get("com.docker.compose.project") != expected_project
         or labels.get("com.docker.compose.network") != "management"
     ):
